@@ -1,8 +1,8 @@
 require_relative "lib/my_gem/version"
 
 Gem::Specification.new do |spec|
-  spec.name = "agentkit"
-  spec.version = AgentKit::VERSION
+  spec.name = "activeintelligence.rb"
+  spec.version = ActiveIntelligence::VERSION
   spec.authors = ["Marcus Bernales"]
   spec.email = ["marcus@totum.io"]
 
