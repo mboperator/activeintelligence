@@ -68,13 +68,14 @@ module ActiveIntelligence
 
       # Call API based on streaming option
       response = if stream && block_given?
-                   @api_client.call_streaming(formatted_messages, system_prompt, options.merge(tools: api_tools), &block)
+                   # For streaming, we need special handling for tool calls
+                   streaming_with_tool_processing(formatted_messages, system_prompt, options.merge(tools: api_tools), &block)
                  else
                    @api_client.call(formatted_messages, system_prompt, options.merge(tools: api_tools))
                  end
 
-      # Process tool calls if needed
-      response = process_tool_calls(response) if contains_tool_calls?(response)
+      # Process tool calls if needed (only for non-streaming)
+      response = process_tool_calls(response) if !stream && contains_tool_calls?(response)
 
       # Save response to history
       add_message('assistant', response)
@@ -153,13 +154,117 @@ module ActiveIntelligence
           result = tool_instance.call(tool_params)
 
           # Add tool result to content
-          content += "\n\nTool Result (#{tool_name}):\n#{result.inspect}"
+          content += "\n\nTool Result (#{tool_name}):\n#{format_tool_result(result)}"
         else
           content += "\n\nTool not found: #{tool_name}"
         end
       end
 
       content
+    end
+
+    # Execute a specific tool call
+    def execute_tool_call(tool_name, tool_params)
+      # Find matching tool
+      tool = @tools.find do |t|
+        t.is_a?(Class) ? t.name == tool_name : t.class.name == tool_name
+      end
+
+      if tool
+        # Execute tool and get result
+        tool_instance = tool.is_a?(Class) ? tool.new : tool
+        result = tool_instance.call(tool_params)
+        return result
+      else
+        return "Tool not found: #{tool_name}"
+      end
+    end
+
+    # Handle streaming responses with tool call processing
+    def streaming_with_tool_processing(messages, system_prompt, options, &block)
+      full_response = ""
+      current_chunk = ""
+      tool_call_detected = false
+      tool_call_name = nil
+      tool_call_params = {}
+      
+      @api_client.call_streaming(messages, system_prompt, options) do |chunk|
+        # Check if chunk contains a tool call
+        if chunk.start_with?('[') && chunk.include?(':')
+          # Extract tool call information
+          match_data = chunk.match(/\[(.*?):(\{.*\})\]/)
+          if match_data
+            tool_call_detected = true
+            tool_call_name = match_data[1]
+            begin
+              tool_call_params = JSON.parse(match_data[2])
+            rescue JSON::ParserError
+              tool_call_params = {}
+            end
+            
+            # Get display name for the tool (without namespace)
+            display_name = tool_call_name.to_s.split('::').last
+            
+            # Let user know we're executing a tool
+            yield "\nExecuting tool: #{display_name}...\n"
+            
+            # Execute the tool
+            tool_result = execute_tool_call(tool_call_name, tool_call_params)
+            
+            # Add the tool result to the full response with better formatting
+            result_text = "Result: #{format_tool_result(tool_result)}\n\n"
+            full_response += result_text
+            yield result_text
+            
+            # Continue the conversation with the tool result
+            yield "Continuing conversation with tool result...\n"
+            continue_conversation_with_tool_result(messages, system_prompt, tool_call_name, tool_call_params, tool_result, options, &block)
+          else
+            # Pass through regular chunk
+            full_response += chunk
+            yield chunk if block_given?
+          end
+        else
+          # Pass through regular chunk
+          full_response += chunk
+          yield chunk if block_given?
+        end
+      end
+      
+      full_response
+    end
+    
+    # Format the tool result for display
+    def format_tool_result(result)
+      if result.is_a?(Hash) && result[:data] && result[:data].is_a?(Hash)
+        result[:data].values.first
+      elsif result.is_a?(Hash) && result[:data]
+        result[:data]
+      elsif result.is_a?(Array)
+        result.map(&:inspect).join("\n")
+      else
+        result.inspect
+      end
+    end
+    
+    # Continue the conversation with the tool result
+    def continue_conversation_with_tool_result(messages, system_prompt, tool_name, tool_params, tool_result, options, &block)
+      # Format the tool name for display
+      display_name = tool_name.to_s.split('::').last
+      
+      # Create a message for the tool usage and result
+      tool_result_content = "Tool #{display_name} returned: #{format_tool_result(tool_result)}\n\nPlease continue your response based on this information."
+      
+      # Add an assistant message to indicate tool usage and a user message with the result
+      updated_messages = messages + [
+        { role: 'assistant', content: "I'll use the #{display_name} tool." },
+        { role: 'user', content: tool_result_content }
+      ]
+      
+      # Make another API call to continue the conversation
+      @api_client.call_streaming(updated_messages, system_prompt, options) do |chunk|
+        yield chunk if block_given?
+      end
     end
   end
 end

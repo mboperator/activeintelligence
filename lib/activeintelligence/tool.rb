@@ -1,167 +1,255 @@
-# lib/active_intelligence/api_clients/claude_client.rb
+# lib/active_intelligence/tool.rb
 module ActiveIntelligence
-  module ApiClients
-    class ClaudeClient < BaseClient
-      ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages".freeze
-
-      def initialize(options = {})
-        super
-        @api_key = options[:api_key] || ENV['ANTHROPIC_API_KEY']
-        @model = options[:model] || Config.settings[:claude][:model]
-        @api_version = options[:api_version] || Config.settings[:claude][:api_version]
-        @max_tokens = options[:max_tokens] || Config.settings[:claude][:max_tokens]
-
-        raise ConfigurationError, "Anthropic API key is required" unless @api_key
-      end
-
-      def call(messages, system_prompt, options = {})
-        params = build_request_params(messages, system_prompt, options)
-
-        uri = URI(ANTHROPIC_API_URL)
-        http = setup_http_client(uri)
-        request = build_request(uri, params)
-
-        response = http.request(request)
-        process_response(response)
-      rescue => e
-        handle_error(e)
-      end
-
-      def call_streaming(messages, system_prompt, options = {}, &block)
-        params = build_request_params(messages, system_prompt, options.merge(stream: true))
-
-        uri = URI(ANTHROPIC_API_URL)
-        http = setup_http_client(uri)
-        request = build_request(uri, params, stream: true)
-
-        full_response = ""
-
-        http.request(request) do |response|
-          if response.code != "200"
-            error_msg = handle_error(StandardError.new("#{response.code} - #{response.body}"))
-            yield error_msg if block_given?
-            return error_msg
-          end
-
-          process_streaming_response(response, full_response, &block)
-        end
-
-        full_response
-      rescue => e
-        error_msg = handle_error(e)
-        yield error_msg if block_given?
-        error_msg
-      end
-
-      private
-
-      def build_request_params(messages, system_prompt, options)
-        params = {
-          model: options[:model] || @model,
-          system: system_prompt,
-          messages: messages,
-          max_tokens: options[:max_tokens] || @max_tokens,
-          stream: options[:stream] || false
-        }
-
-        # Add tools if provided
-        if options[:tools] && !options[:tools].empty?
-          params[:tools] = options[:tools]
-        end
-
-        params
-      end
-
-      def setup_http_client(uri)
-        http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl = true
-        http.read_timeout = 300 # 5 minutes timeout for streaming
-        http
-      end
-
-      def build_request(uri, params, stream: false)
-        request = Net::HTTP::Post.new(uri)
-        request["Content-Type"] = "application/json"
-        request["x-api-key"] = @api_key
-        request["anthropic-version"] = @api_version
-
-        if stream
-          request["Accept"] = "text/event-stream"
-        end
-
-        request.body = params.to_json
-        request
-      end
-
-      def process_response(response)
-        case response.code
-        when "200"
-          result = safe_parse_json(response.body)
-
-          if result && result["content"]
-            # Check if there are tool calls in the response
-            tool_calls = result["tool_calls"]
-            if tool_calls && !tool_calls.empty?
-              return {
-                content: result["content"][0]["text"],
-                tool_calls: tool_calls.map do |tc|
-                  {
-                    name: tc["name"],
-                    parameters: tc["input"]
-                  }
-                end
-              }
-            end
-
-            # Standard text response
-            return result["content"][0]["text"]
-          end
-
-          "Error: Unable to parse response"
+  class Tool
+    # Class-level attributes and methods
+    class << self
+      attr_reader :parameters, :error_handlers, :rescue_handlers
+      
+      def inherited(subclass)
+        subclass.instance_variable_set(:@parameters, {})
+        subclass.instance_variable_set(:@error_handlers, {})
+        subclass.instance_variable_set(:@rescue_handlers, {})
+        subclass.instance_variable_set(:@tool_type, :query)
+        subclass.instance_variable_set(:@tool_description, nil)
+        if subclass.name
+          subclass.instance_variable_set(:@tool_name, underscore(subclass.name.split('::').last))
         else
-          "API Error: #{response.code} - #{response.body}"
+          subclass.instance_variable_set(:@tool_name, "tool_#{object_id}")
         end
       end
-
-      def process_streaming_response(response, full_response, &block)
-        buffer = ""
-
-        response.read_body do |chunk|
-          buffer += chunk
-
-          # Process complete SSE events from the buffer
-          while buffer.include?("\n\n")
-            event, buffer = buffer.split("\n\n", 2)
-
-            # Skip empty events
-            next if event.strip.empty?
-
-            # Find the data line
-            data_line = event.split("\n").find { |line| line.start_with?("data: ") }
-            next unless data_line
-
-            data = data_line[6..-1] # Remove "data: " prefix
-
-            # Skip [DONE] message
-            next if data.strip == "[DONE]"
-
-            json_data = safe_parse_json(data)
-            next unless json_data
-
-            # Extract the text from the event
-            if json_data["type"] == "content_block_delta" &&
-              json_data["delta"]["type"] == "text_delta"
-              text = json_data["delta"]["text"]
-
-              # Append to full response
-              full_response << text
-
-              # Yield the text chunk to the block
-              yield text if block_given?
-            end
-          end
+      
+      # Simple underscore method (similar to ActiveSupport's)
+      def underscore(camel_cased_word)
+        return camel_cased_word unless camel_cased_word =~ /[A-Z-]|::/
+        word = camel_cased_word.to_s.gsub('::', '/')
+        word.gsub!(/([A-Z\d]+)([A-Z][a-z])/, '\1_\2')
+        word.gsub!(/([a-z\d])([A-Z])/, '\1_\2')
+        word.tr!("-", "_")
+        word.downcase!
+        word
+      end
+      
+      def tool_type(type = nil)
+        @tool_type = type if type
+        @tool_type
+      end
+      
+      def description(desc = nil)
+        @tool_description = desc if desc
+        @tool_description
+      end
+      
+      def name(custom_name = nil)
+        if custom_name
+          @tool_name = custom_name
+        else
+          @tool_name
+        end
+      end
+      
+      def param(name, type: String, required: false, description: nil, default: nil, enum: nil)
+        @parameters[name] = {
+          type: type,
+          required: required,
+          description: description,
+          default: default,
+          enum: enum
+        }
+      end
+      
+      # Define error handlers for specific scenarios
+      def on_error(error_type, &block)
+        @error_handlers[error_type] = block
+      end
+      
+      # Rescue specific exceptions and convert to tool errors
+      def rescue_from(exception_class, with: nil, &block)
+        handler = block_given? ? block : with
+        @rescue_handlers[exception_class] = handler
+      end
+      
+      # Generate JSON schema for LLM tool calling APIs
+      def to_json_schema
+        properties = {}
+        required = []
+        
+        @parameters.each do |name, options|
+          properties[name] = {
+            type: ruby_type_to_json_type(options[:type]),
+            description: options[:description]
+          }
+          
+          properties[name][:enum] = options[:enum] if options[:enum]
+          required << name.to_s if options[:required]
+        end
+        
+        {
+          name: name,
+          description: @tool_description,
+          input_schema: {
+            type: "object",
+            properties: properties,
+          }
+        }
+      end
+      
+      def ruby_type_to_json_type(type)
+        case type.to_s
+        when "String" then "string"
+        when "Integer" then "integer"
+        when "Float" then "number"
+        when "TrueClass", "FalseClass", "Boolean" then "boolean"
+        when "Array" then "array"
+        when "Hash" then "object"
+        else "string" # Default to string
+        end
+      end
+      
+      # Is this a query tool? (returns data without side effects)
+      def query?
+        @tool_type == :query
+      end
+      
+      # Is this a command tool? (has side effects)
+      def command?
+        @tool_type == :command
+      end
+    end
+    
+    # Instance methods
+    def call(params = {})
+      # Convert string keys to symbols
+      params = symbolize_keys(params)
+      
+      # Apply default values
+      params = apply_defaults(params)
+      
+      # Validate parameters
+      validate_params!(params)
+      
+      # Execute the tool with error handling
+      begin
+        execute(params)
+      rescue StandardError => e
+        handle_exception(e, params)
+      end
+    end
+    
+    # To be implemented by subclasses
+    def execute(params)
+      raise NotImplementedError, "Subclasses must implement #execute"
+    end
+    
+    protected
+    
+    def symbolize_keys(hash)
+      hash.transform_keys(&:to_sym)
+    end
+    
+    def apply_defaults(params)
+      result = params.dup
+      
+      self.class.parameters.each do |name, options|
+        if !result.key?(name) && options.key?(:default)
+          result[name] = options[:default]
+        end
+      end
+      
+      result
+    end
+    
+    def validate_params!(params)
+      self.class.parameters.each do |name, options|
+        # Check required parameters
+        if options[:required] && !params.key?(name)
+          raise InvalidParameterError.new(
+            "Missing required parameter: #{name}",
+            details: { parameter: name }
+          )
+        end
+        
+        # Skip validation for nil values (unless required)
+        next if !params.key?(name) || params[name].nil?
+        
+        # Type checking
+        if options[:type] && !params[name].is_a?(options[:type])
+          raise InvalidParameterError.new(
+            "Invalid type for parameter #{name}: expected #{options[:type]}, got #{params[name].class}",
+            details: { parameter: name, expected: options[:type].to_s, received: params[name].class.to_s }
+          )
+        end
+        
+        # Enum validation
+        if options[:enum] && !options[:enum].include?(params[name])
+          raise InvalidParameterError.new(
+            "Invalid value for parameter #{name}: must be one of #{options[:enum].join(', ')}",
+            details: { parameter: name, allowed_values: options[:enum], received: params[name] }
+          )
         end
       end
     end
+    
+    def handle_exception(exception, params)
+      # Check if we have a specific rescue handler for this exception class
+      handler = find_rescue_handler(exception.class)
+      
+      if handler
+        if handler.is_a?(Symbol)
+          send(handler, exception, params)
+        else
+          instance_exec(exception, params, &handler)
+        end
+      elsif exception.is_a?(ToolError)
+        # It's already a ToolError, so return its response format
+        exception.to_response
+      else
+        # Convert generic exceptions to ToolError
+        ToolError.new(
+          "Tool execution failed: #{exception.message}",
+          details: { 
+            exception_class: exception.class.to_s,
+            backtrace: exception.backtrace&.first(3)
+          }
+        ).to_response
+      end
+    end
+    
+    def find_rescue_handler(exception_class)
+      # Find the most specific handler for this exception
+      self.class.rescue_handlers.find do |klass, handler|
+        exception_class <= klass
+      end&.last
+    end
+    
+    def handle_error(error_type, params)
+      handler = self.class.error_handlers[error_type]
+      instance_exec(params, &handler) if handler
+    end
+    
+    # Helper for creating error responses
+    def error_response(message, details = {})
+      {
+        error: true,
+        message: message,
+        details: details
+      }
+    end
+    
+    # Helper for creating success responses
+    def success_response(data)
+      {
+        success: true,
+        data: data
+      }
+    end
+  end
+  
+  # Convenience subclasses
+  class QueryTool < Tool
+    tool_type :query
+  end
+  
+  class CommandTool < Tool
+    tool_type :command
   end
 end

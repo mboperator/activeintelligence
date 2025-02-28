@@ -149,8 +149,7 @@ module ActiveIntelligence
             next unless json_data
 
             # Extract the text from the event
-            if json_data["type"] == "content_block_delta" &&
-              json_data["delta"]["type"] == "text_delta"
+            if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "text_delta"
               text = json_data["delta"]["text"]
 
               # Append to full response
@@ -158,6 +157,14 @@ module ActiveIntelligence
 
               # Yield the text chunk to the block
               yield text if block_given?
+            end
+            if json_data["type"] == "content_block_start" && json_data["content_block"]["type"] == "tool_use"
+              tool_call = json_data["content_block"]
+              tool_call_name = tool_call["name"]
+              tool_call_params = tool_call["input"]
+
+              full_response << "#{tool_call_name}:#{tool_call_params}"
+              yield "[#{tool_call_name}:#{tool_call_params}]" if block_given?
             end
           end
         end
