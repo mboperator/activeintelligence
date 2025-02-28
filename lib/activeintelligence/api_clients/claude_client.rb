@@ -56,13 +56,20 @@ module ActiveIntelligence
       private
 
       def build_request_params(messages, system_prompt, options)
-        {
+        params = {
           model: options[:model] || @model,
           system: system_prompt,
           messages: messages,
           max_tokens: options[:max_tokens] || @max_tokens,
           stream: options[:stream] || false
         }
+
+        # Add tools if provided
+        if options[:tools] && !options[:tools].empty?
+          params[:tools] = options[:tools]
+        end
+
+        params
       end
 
       def setup_http_client(uri)
@@ -90,7 +97,28 @@ module ActiveIntelligence
         case response.code
         when "200"
           result = safe_parse_json(response.body)
-          return result["content"][0]["text"] if result && result["content"]
+
+          if result && result["content"]
+            # Check if there are tool calls in the response
+            tool_calls = result["content"].select { |message| message["type"] == "tool_use" }
+            content = result["content"].select { |message| message["type"] == "text" }
+
+            if tool_calls && !tool_calls.empty?
+              return {
+                content: content[0]["text"],
+                tool_calls: tool_calls.map do |tc|
+                  {
+                    name: tc["name"],
+                    parameters: tc["input"]
+                  }
+                end
+              }
+            end
+
+            # Standard text response
+            return result["content"][0]["text"]
+          end
+
           "Error: Unable to parse response"
         else
           "API Error: #{response.code} - #{response.body}"
@@ -123,8 +151,7 @@ module ActiveIntelligence
             next unless json_data
 
             # Extract the text from the event
-            if json_data["type"] == "content_block_delta" &&
-              json_data["delta"]["type"] == "text_delta"
+            if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "text_delta"
               text = json_data["delta"]["text"]
 
               # Append to full response
@@ -132,6 +159,14 @@ module ActiveIntelligence
 
               # Yield the text chunk to the block
               yield text if block_given?
+            end
+            if json_data["type"] == "content_block_start" && json_data["content_block"]["type"] == "tool_use"
+              tool_call = json_data["content_block"]
+              tool_call_name = tool_call["name"]
+              tool_call_params = tool_call["input"]
+
+              full_response << "#{tool_call_name}:#{tool_call_params}"
+              yield "[#{tool_call_name}:#{tool_call_params}]" if block_given?
             end
           end
         end

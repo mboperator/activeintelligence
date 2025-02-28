@@ -3,6 +3,8 @@ require_relative 'activeintelligence/config'
 require_relative 'activeintelligence/agent'
 require_relative 'activeintelligence/api_clients/base_client'
 require_relative 'activeintelligence/api_clients/claude_client'
+require_relative 'activeintelligence/tool'
+require_relative 'activeintelligence/errors'
 
 module ActiveIntelligence
   class Error < StandardError; end

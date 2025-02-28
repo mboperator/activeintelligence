@@ -6,7 +6,7 @@ require_relative '../lib/activeintelligence'
 
 # Configure the gem
 ActiveIntelligence.configure do |config|
-  config.settings[:claude][:model] = "claude-3-sonnet-20240229" # Use a faster model for testing
+  config.settings[:claude][:model] = "claude-3-5-haiku-latest" # Use a faster model for testing
   config.settings[:logger] = Logger.new(STDOUT, level: Logger::INFO)
 end
 
