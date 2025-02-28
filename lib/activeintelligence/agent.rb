@@ -53,8 +53,17 @@ module ActiveIntelligence
       setup_api_client
     end
 
-    # Main method to send messages with streaming support
+    # Main method to send messages that delegates to appropriate handler
     def send_message(message, stream: false, **options, &block)
+      if stream && block_given?
+        send_message_streaming(message, options, &block)
+      else
+        send_message_static(message, options)
+      end
+    end
+
+    # Handle non-streaming message requests
+    def send_message_static(message, options = {})
       add_message('user', message)
 
       # Prepare system prompt
@@ -66,20 +75,40 @@ module ActiveIntelligence
       # Prepare tools for API
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
-      # Call API based on streaming option
-      response = if stream && block_given?
-                   # For streaming, we need special handling for tool calls
-                   streaming_with_tool_processing(formatted_messages, system_prompt, options.merge(tools: api_tools), &block)
-                 else
-                   @api_client.call(formatted_messages, system_prompt, options.merge(tools: api_tools))
-                 end
+      # Call API (non-streaming)
+      response = @api_client.call(formatted_messages, system_prompt, options.merge(tools: api_tools))
 
-      # Process tool calls if needed (only for non-streaming)
-      response = process_tool_calls(response) if !stream && contains_tool_calls?(response)
+      # Process tool calls if needed
+      if contains_tool_calls?(response)
+        response = process_tool_calls(response)
+      end
 
       # Save response to history
       add_message('assistant', response)
 
+      # Return the response
+      response
+    end
+
+    # Handle streaming message requests
+    def send_message_streaming(message, options = {}, &block)
+      add_message('user', message)
+
+      # Prepare system prompt
+      system_prompt = build_system_prompt
+
+      # Format messages for API
+      formatted_messages = format_messages_for_api
+
+      # Prepare tools for API
+      api_tools = @tools.empty? ? nil : format_tools_for_api
+      
+      # Process streaming with tool call handling
+      response = streaming_with_tool_processing(formatted_messages, system_prompt, options.merge(tools: api_tools), &block)
+      
+      # Save response to history
+      add_message('assistant', response)
+      
       # Return the response
       response
     end
@@ -130,15 +159,53 @@ module ActiveIntelligence
     end
 
     def contains_tool_calls?(response)
-      response.is_a?(Hash) && response[:tool_calls].is_a?(Array) && !response[:tool_calls].empty?
+      if response.is_a?(Hash)
+        response.key?(:tool_calls) && response[:tool_calls].is_a?(Array) && !response[:tool_calls].empty?
+      elsif response.is_a?(String)
+        response.include?('[') && response.include?('tool_calls')
+      else
+        false
+      end
     end
 
     def process_tool_calls(response)
       return response unless contains_tool_calls?(response)
 
-      content = response[:content] || ""
+      content = response.is_a?(Hash) ? (response[:content] || "") : response
 
-      # Process each tool call
+      # If it's a string response with a tool call pattern, extract the tool call
+      if response.is_a?(String) && response.include?('[') && response.include?(':')
+        match_data = response.match(/\[(.*?):(\{.*\})\]/)
+        if match_data
+          tool_call_name = match_data[1]
+          begin
+            tool_call_params = JSON.parse(match_data[2])
+            
+            # Find matching tool
+            tool = @tools.find do |t|
+              t.is_a?(Class) ? t.name == tool_call_name : t.class.name == tool_call_name
+            end
+            
+            if tool
+              # Execute tool and get result
+              tool_instance = tool.is_a?(Class) ? tool.new : tool
+              result = tool_instance.call(tool_call_params)
+              
+              # Add tool result to content with better formatting
+              content = content.sub(/\[#{tool_call_name}:(\{.*?\})\]/, "")
+              content += "\n\nTool Result (#{tool_call_name}):\n#{format_tool_result(result)}"
+            else
+              content += "\n\nTool not found: #{tool_call_name}"
+            end
+          rescue JSON::ParserError
+            content += "\n\nError parsing tool parameters"
+          end
+        end
+        
+        return content
+      end
+
+      # Process each tool call from the hash response
       response[:tool_calls].each do |tool_call|
         tool_name = tool_call[:name]
         tool_params = tool_call[:parameters]

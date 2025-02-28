@@ -100,14 +100,16 @@ module ActiveIntelligence
 
           if result && result["content"]
             # Check if there are tool calls in the response
-            tool_calls = result["tool_calls"]
+            tool_calls = result["content"].select { |message| message["type"] == "tool_use" }
+            content = result["content"].select { |message| message["type"] == "text" }
+
             if tool_calls && !tool_calls.empty?
               return {
-                content: result["content"][0]["text"],
+                content: content[0]["text"],
                 tool_calls: tool_calls.map do |tc|
                   {
                     name: tc["name"],
-                    parameters: tc["parameters"]
+                    parameters: tc["input"]
                   }
                 end
               }
