@@ -80,6 +80,64 @@ module ActiveIntelligence
 
       # Process tool calls if needed
       if contains_tool_calls?(response)
+        # Extract tool call information
+        if response.is_a?(String) && response.include?('[') && response.include?(':')
+          match_data = response.match(/\[(.*?):(\{.*\})\]/)
+          if match_data
+            tool_call_name = match_data[1]
+            begin
+              tool_call_params = JSON.parse(match_data[2])
+              
+              # Execute the tool
+              tool_result = execute_tool_call(tool_call_name, tool_call_params)
+              
+              # Continue the conversation with the tool result
+              final_response = continue_conversation_with_tool_result(
+                formatted_messages, 
+                system_prompt, 
+                tool_call_name, 
+                tool_call_params, 
+                tool_result, 
+                options
+              )
+              
+              # Save final response to history
+              add_message('assistant', final_response)
+              
+              return final_response
+            rescue JSON::ParserError
+              # If JSON parsing fails, fall back to the original behavior
+            end
+          end
+        elsif response.is_a?(Hash) && response[:tool_calls]
+          # Handle structured tool calls from API response
+          tool_call = response[:tool_calls].first
+          if tool_call
+            tool_name = tool_call[:name]
+            tool_params = tool_call[:parameters]
+            
+            # Execute the tool
+            tool_result = execute_tool_call(tool_name, tool_params)
+            
+            # Continue the conversation with the tool result
+            final_response = continue_conversation_with_tool_result(
+              formatted_messages, 
+              system_prompt, 
+              tool_name, 
+              tool_params, 
+              tool_result, 
+              options
+            )
+            
+            # Save final response to history
+            add_message('assistant', final_response)
+            
+            return final_response
+          end
+        end
+        
+        # If we couldn't extract and follow up with tool calls,
+        # fall back to the original behavior
         response = process_tool_calls(response)
       end
 
@@ -328,9 +386,16 @@ module ActiveIntelligence
         { role: 'user', content: tool_result_content }
       ]
       
-      # Make another API call to continue the conversation
-      @api_client.call_streaming(updated_messages, system_prompt, options) do |chunk|
-        yield chunk if block_given?
+      # Determine if we're in streaming or non-streaming mode based on block presence
+      if block_given?
+        # Streaming mode - Call the API with streaming and yield chunks
+        @api_client.call_streaming(updated_messages, system_prompt, options) do |chunk|
+          yield chunk
+        end
+      else
+        # Non-streaming mode - Call the API normally and return the full response
+        final_response = @api_client.call(updated_messages, system_prompt, options)
+        return final_response
       end
     end
   end
