@@ -1,6 +1,6 @@
 # ActiveIntelligence
 
-A Ruby gem for easily creating LLM-backed AI agents.
+A gem for building AI agents.
 
 ## Installation
 
