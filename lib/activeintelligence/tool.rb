@@ -107,7 +107,7 @@ module ActiveIntelligence
                 tool_calls: tool_calls.map do |tc|
                   {
                     name: tc["name"],
-                    parameters: tc["parameters"]
+                    parameters: tc["input"]
                   }
                 end
               }
