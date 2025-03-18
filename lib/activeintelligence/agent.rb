@@ -331,18 +331,22 @@ module ActiveIntelligence
             display_name = tool_call_name.to_s.split('::').last
             
             # Let user know we're executing a tool
+            yield "\n---------------------------------------"
             yield "\nExecuting tool: #{display_name}...\n"
             
             # Execute the tool
             tool_result = execute_tool_call(tool_call_name, tool_call_params)
             
             # Add the tool result to the full response with better formatting
-            result_text = "Result: #{format_tool_result(tool_result)}\n\n"
+            result_text = "Result: #{format_tool_result(tool_result)}\n"
+
             full_response += result_text
             yield result_text
-            
+
+
             # Continue the conversation with the tool result
             yield "Continuing conversation with tool result...\n"
+            yield "---------------------------------------\n\n"
             continue_conversation_with_tool_result(messages, system_prompt, tool_call_name, tool_call_params, tool_result, options, &block)
           else
             # Pass through regular chunk

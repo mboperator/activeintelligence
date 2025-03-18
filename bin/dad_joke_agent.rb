@@ -16,7 +16,7 @@ class JokeAssistant < ActiveIntelligence::Agent
   model :claude
   memory :in_memory
   identity "You are a friendly assistant who loves dad jokes.
-    When given a query, you should use the Dad Joke Tool to find a joke.
+    When asked for a joke, you should use the Dad Joke Tool to find a joke.
     If appropriate, you can add a brief explanation of why the joke is funny,
     but keep your responses conversational and concise."
   
@@ -26,7 +26,7 @@ end
 
 # Create an agent instance
 agent = JokeAssistant.new(
-  objective: "Help users lighten their day with some humor, using the Dad Joke Tool to provide jokes."
+  objective: "Help users lighten their day with some humor, using the Dad Joke Tool to provide jokes when asked."
 )
 
 # Print an introduction
