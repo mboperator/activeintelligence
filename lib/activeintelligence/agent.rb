@@ -83,7 +83,7 @@ module ActiveIntelligence
         tool_output = execute_tool_call(tool_name, tool_params)
         tool_response = ToolResponse.new(tool_name:, result: tool_output)
         add_message(tool_response)
-        response = call_api(tool_response.content)
+        response = call_api
         add_message(response)
 
         [tool_response, response]
@@ -95,14 +95,14 @@ module ActiveIntelligence
       message = UserMessage.new(content:)
       add_message(message)
 
-      response = call_api(message)
+      response = call_api
       add_message(response)
 
       response
     end
 
     # Call API (non-streaming)
-    def call_api(message)
+    def call_api
       formatted_messages = format_messages_for_api
       system_prompt = build_system_prompt
       api_tools = @tools.empty? ? nil : format_tools_for_api
@@ -112,26 +112,24 @@ module ActiveIntelligence
     end
 
     # Handle streaming message requests
-    def send_message_streaming(message, options = {}, &block)
-      add_message(UserMessage.new(content: message))
+    def send_message_streaming(content, options = {}, &block)
+      message = UserMessage.new(content:)
+      add_message(message)
 
-      # Prepare system prompt
+      response = call_streaming_api(&block)
+      add_message(response)
+      
+      response
+    end
+
+    def call_streaming_api(&block)
       system_prompt = build_system_prompt
-
-      # Format messages for API
       formatted_messages = format_messages_for_api
 
-      # Prepare tools for API
       api_tools = @tools.empty? ? nil : format_tools_for_api
-      
-      # Process streaming with tool call handling
+
       response = streaming_with_tool_processing(formatted_messages, system_prompt, options.merge(tools: api_tools), &block)
-      
-      # Save response to history
-      add_message(AgentResponse.new(content: response))
-      
-      # Return the response
-      response
+      AgentResponse.new(content: response[:content], tool_calls: response[:tool_calls])
     end
 
     private
@@ -213,7 +211,7 @@ module ActiveIntelligence
       tool_call_detected = false
       tool_call_name = nil
       tool_call_params = {}
-      
+
       @api_client.call_streaming(messages, system_prompt, options) do |chunk|
         # Check if chunk contains a tool call
         if chunk.start_with?('[') && chunk.include?(':')
@@ -227,24 +225,6 @@ module ActiveIntelligence
             rescue JSON::ParserError
               tool_call_params = {}
             end
-            
-            # Get display name for the tool (without namespace)
-            display_name = tool_call_name.to_s.split('::').last
-            
-            # Let user know we're executing a tool
-            yield "\nExecuting tool: #{display_name}...\n"
-            
-            # Execute the tool
-            tool_result = execute_tool_call(tool_call_name, tool_call_params)
-            
-            # Add the tool result to the full response with better formatting
-            result_text = "Result: #{format_tool_result(tool_result)}\n\n"
-            full_response += result_text
-            yield result_text
-            
-            # Continue the conversation with the tool result
-            yield "Continuing conversation with tool result...\n"
-            continue_conversation_with_tool_result(messages, system_prompt, tool_call_name, tool_call_params, tool_result, options, &block)
           else
             # Pass through regular chunk
             full_response += chunk
@@ -256,8 +236,23 @@ module ActiveIntelligence
           yield chunk if block_given?
         end
       end
-      
-      full_response
+
+      if tool_call_detected
+        {
+          content: full_response,
+          tool_calls: [
+            {
+              name: tool_call_name,
+              parameters: tool_call_params
+            }
+          ]
+        }
+      else
+        {
+          content: full_response,
+          tool_calls: []
+        }
+      end
     end
     
     # Format the tool result for display

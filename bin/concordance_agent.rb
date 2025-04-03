@@ -34,7 +34,7 @@ loop do
   # Streaming response
   puts "\nResponse:"
   response = agent.send_message(input)
-  puts response.content
+  puts response
   puts "\n\n"
 end
 
