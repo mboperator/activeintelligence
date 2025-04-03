@@ -34,8 +34,6 @@ module ActiveIntelligence
         http = setup_http_client(uri)
         request = build_request(uri, params, stream: true)
 
-        full_response = ""
-
         http.request(request) do |response|
           if response.code != "200"
             error_msg = handle_error(StandardError.new("#{response.code} - #{response.body}"))
@@ -43,10 +41,9 @@ module ActiveIntelligence
             return error_msg
           end
 
-          process_streaming_response(response, full_response, &block)
+          result = process_streaming_response(response, &block)
+          return result
         end
-
-        full_response
       rescue => e
         error_msg = handle_error(e)
         yield error_msg if block_given?
@@ -128,7 +125,12 @@ module ActiveIntelligence
         end
       end
 
-      def process_streaming_response(response, full_response, &block)
+      def process_streaming_response(response, &block)
+        full_response = ""
+        tool_call_detected = false
+        tool_call_name = nil
+        tool_call_params = {}
+
         buffer = ""
 
         response.read_body do |chunk|
@@ -164,14 +166,29 @@ module ActiveIntelligence
               yield text if block_given?
             end
             if json_data["type"] == "content_block_start" && json_data["content_block"]["type"] == "tool_use"
+              tool_call_detected = true
               tool_call = json_data["content_block"]
               tool_call_name = tool_call["name"]
               tool_call_params = tool_call["input"]
-
-              full_response << "#{tool_call_name}:#{tool_call_params}"
-              yield "[#{tool_call_name}:#{tool_call_params}]" if block_given?
             end
           end
+        end
+
+        if tool_call_detected
+          {
+            content: full_response,
+            tool_calls: [
+              {
+                name: tool_call_name,
+                parameters: tool_call_params
+              }
+            ]
+          }
+        else
+          {
+            content: full_response,
+            tool_calls: []
+          }
         end
       end
     end
