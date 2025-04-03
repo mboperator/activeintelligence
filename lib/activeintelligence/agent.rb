@@ -1,3 +1,5 @@
+require 'pry'
+
 # lib/active_intelligence/agent.rb
 module ActiveIntelligence
   class Agent
@@ -55,72 +57,37 @@ module ActiveIntelligence
 
     # Main method to send messages that delegates to appropriate handler
     def send_message(message, stream: false, **options, &block)
+      responses = []
+
       if stream && block_given?
         response = send_message_streaming(message, options, &block)
       else
         response = send_message_static(message, options)
       end
+      responses << response
+      responses << process_tool_calls(response)
 
-      # process_response(response)
+      responses.flatten.map(&:content).join("\n\n")
     end
 
-    def process_tool_calls(response)
-      # Process tool calls if needed
-      if contains_tool_calls?(response)
-        # Extract tool call information
-        if response.is_a?(String) && response.include?('[') && response.include?(':')
-          match_data = response.match(/\[(.*?):(\{.*\})\]/)
-          if match_data
-            tool_call_name = match_data[1]
-            begin
-              tool_call_params = JSON.parse(match_data[2])
+    def process_tool_calls(last_message)
+      if last_message.tool_calls.empty?
+        []
+      else
+        # Handle structured tool calls from API response
+        tool_call = last_message.tool_calls.first
+        tool_name = tool_call[:name]
+        tool_params = tool_call[:parameters]
 
+        # Execute the tool
+        tool_output = execute_tool_call(tool_name, tool_params)
+        tool_response = ToolResponse.new(tool_name:, result: tool_output)
+        add_message(tool_response)
+        response = call_api(tool_response.content)
+        add_message(response)
 
-              tool_result = execute_tool_call(tool_call_name, tool_call_params)
-              add_message(ToolResponse.new(content: tool_result))
-
-
-
-              # Save final response to history
-              add_message(AgentResponse.new(content: final_response))
-
-              return final_response
-            rescue JSON::ParserError
-              # If JSON parsing fails, fall back to the original behavior
-            end
-          end
-        elsif response.is_a?(Hash) && response[:tool_calls]
-          # Handle structured tool calls from API response
-          tool_call = response[:tool_calls].first
-          if tool_call
-            tool_name = tool_call[:name]
-            tool_params = tool_call[:parameters]
-
-            # Execute the tool
-            tool_result = execute_tool_call(tool_name, tool_params)
-
-            # Continue the conversation with the tool result
-            final_response = continue_conversation_with_tool_result(
-              formatted_messages,
-              system_prompt,
-              tool_name,
-              tool_params,
-              tool_result,
-              options
-            )
-
-            # Save final response to history
-            add_message(AgentResponse.new(content: final_response))
-
-            return final_response
-          end
-        end
-
-        # If we couldn't extract and follow up with tool calls,
-        # fall back to the original behavior
-        response = process_tool_calls(response)
+        [tool_response, response]
       end
-
     end
 
     # Handle non-streaming message requests
@@ -134,14 +101,14 @@ module ActiveIntelligence
       response
     end
 
+    # Call API (non-streaming)
     def call_api(message)
       formatted_messages = format_messages_for_api
       system_prompt = build_system_prompt
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
-      # Call API (non-streaming)
       result = @api_client.call(formatted_messages, system_prompt, options.merge(tools: api_tools))
-      AgentResponse.new(content: result)
+      AgentResponse.new(content: result[:content], tool_calls: result[:tool_calls])
     end
 
     # Handle streaming message requests
@@ -220,68 +187,6 @@ module ActiveIntelligence
       else
         false
       end
-    end
-
-    def process_tool_calls(response)
-      return response unless contains_tool_calls?(response)
-
-      content = response.is_a?(Hash) ? (response[:content] || "") : response
-
-      # If it's a string response with a tool call pattern, extract the tool call
-      if response.is_a?(String) && response.include?('[') && response.include?(':')
-        match_data = response.match(/\[(.*?):(\{.*\})\]/)
-        if match_data
-          tool_call_name = match_data[1]
-          begin
-            tool_call_params = JSON.parse(match_data[2])
-            
-            # Find matching tool
-            tool = @tools.find do |t|
-              t.is_a?(Class) ? t.name == tool_call_name : t.class.name == tool_call_name
-            end
-            
-            if tool
-              # Execute tool and get result
-              tool_instance = tool.is_a?(Class) ? tool.new : tool
-              result = tool_instance.call(tool_call_params)
-              
-              # Add tool result to content with better formatting
-              content = content.sub(/\[#{tool_call_name}:(\{.*?\})\]/, "")
-              content += "\n\nTool Result (#{tool_call_name}):\n#{format_tool_result(result)}"
-            else
-              content += "\n\nTool not found: #{tool_call_name}"
-            end
-          rescue JSON::ParserError
-            content += "\n\nError parsing tool parameters"
-          end
-        end
-        
-        return content
-      end
-
-      # Process each tool call from the hash response
-      response[:tool_calls].each do |tool_call|
-        tool_name = tool_call[:name]
-        tool_params = tool_call[:parameters]
-
-        # Find matching tool
-        tool = @tools.find do |t|
-          t.is_a?(Class) ? t.name == tool_name : t.class.name == tool_name
-        end
-
-        if tool
-          # Execute tool and get result
-          tool_instance = tool.is_a?(Class) ? tool.new : tool
-          result = tool_instance.call(tool_params)
-
-          # Add tool result to content
-          content += "\n\nTool Result (#{tool_name}):\n#{format_tool_result(result)}"
-        else
-          content += "\n\nTool not found: #{tool_name}"
-        end
-      end
-
-      content
     end
 
     # Execute a specific tool call

@@ -116,7 +116,10 @@ module ActiveIntelligence
             end
 
             # Standard text response
-            return result["content"][0]["text"]
+            return {
+              content: content[0]["text"],
+              tool_calls: []
+            }
           end
 
           "Error: Unable to parse response"
