@@ -60,14 +60,14 @@ module ActiveIntelligence
       responses = []
 
       if stream && block_given?
-        response = send_message_streaming(message, options, &block)
+        send_message_streaming(message, options, &block)
+        process_tool_calls_streaming(&block)
       else
         response = send_message_static(message, options)
+        responses << response
+        responses << process_tool_calls(response)
+        responses.flatten.map(&:content).join("\n\n")
       end
-      responses << response
-      responses << process_tool_calls(response)
-
-      responses.flatten.map(&:content).join("\n\n")
     end
 
     def process_tool_calls(last_message)
@@ -130,6 +130,31 @@ module ActiveIntelligence
 
       response = streaming_with_tool_processing(formatted_messages, system_prompt, options.merge(tools: api_tools), &block)
       AgentResponse.new(content: response[:content], tool_calls: response[:tool_calls])
+    end
+
+    def process_tool_calls_streaming(&block)
+      last_message = @messages.last
+
+      if last_message.tool_calls.empty?
+        []
+      else
+        # Handle structured tool calls from API response
+        tool_call = last_message.tool_calls.first
+        tool_name = tool_call[:name]
+        tool_params = tool_call[:parameters]
+
+        # Execute the tool
+        tool_output = execute_tool_call(tool_name, tool_params)
+        tool_response = ToolResponse.new(tool_name:, result: tool_output)
+        add_message(tool_response)
+
+        yield "\n\n"
+        yield tool_response.content
+        yield "\n\n"
+
+        response = call_streaming_api(&block)
+        add_message(response)
+      end
     end
 
     private
