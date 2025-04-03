@@ -23,7 +23,7 @@ end
 agent = SeminaryProfessor.new(
   objective: "Your objective is to chat with the user in a way that glorifies Christ"
 )
-
+# Interactive loop
 loop do
   print "> "
   input = gets.chomp
@@ -33,9 +33,10 @@ loop do
 
   # Streaming response
   puts "\nResponse:"
-  response = agent.send_message(input)
-  puts response
+  agent.send_message(input, stream: true) do |chunk|
+    print chunk
+    $stdout.flush  # Ensure the output is displayed immediately
+  end
+
   puts "\n\n"
 end
-
-puts "\n\nDone!"
