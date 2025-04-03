@@ -56,28 +56,15 @@ module ActiveIntelligence
     # Main method to send messages that delegates to appropriate handler
     def send_message(message, stream: false, **options, &block)
       if stream && block_given?
-        send_message_streaming(message, options, &block)
+        response = send_message_streaming(message, options, &block)
       else
-        send_message_static(message, options)
+        response = send_message_static(message, options)
       end
+
+      # process_response(response)
     end
 
-    # Handle non-streaming message requests
-    def send_message_static(message, options = {})
-      add_message('user', message)
-
-      # Prepare system prompt
-      system_prompt = build_system_prompt
-
-      # Format messages for API
-      formatted_messages = format_messages_for_api
-
-      # Prepare tools for API
-      api_tools = @tools.empty? ? nil : format_tools_for_api
-
-      # Call API (non-streaming)
-      response = @api_client.call(formatted_messages, system_prompt, options.merge(tools: api_tools))
-
+    def process_tool_calls(response)
       # Process tool calls if needed
       if contains_tool_calls?(response)
         # Extract tool call information
@@ -87,23 +74,16 @@ module ActiveIntelligence
             tool_call_name = match_data[1]
             begin
               tool_call_params = JSON.parse(match_data[2])
-              
-              # Execute the tool
+
+
               tool_result = execute_tool_call(tool_call_name, tool_call_params)
-              
-              # Continue the conversation with the tool result
-              final_response = continue_conversation_with_tool_result(
-                formatted_messages, 
-                system_prompt, 
-                tool_call_name, 
-                tool_call_params, 
-                tool_result, 
-                options
-              )
-              
+              add_message(ToolResponse.new(content: tool_result))
+
+
+
               # Save final response to history
-              add_message('assistant', final_response)
-              
+              add_message(AgentResponse.new(content: final_response))
+
               return final_response
             rescue JSON::ParserError
               # If JSON parsing fails, fall back to the original behavior
@@ -115,42 +95,58 @@ module ActiveIntelligence
           if tool_call
             tool_name = tool_call[:name]
             tool_params = tool_call[:parameters]
-            
+
             # Execute the tool
             tool_result = execute_tool_call(tool_name, tool_params)
-            
+
             # Continue the conversation with the tool result
             final_response = continue_conversation_with_tool_result(
-              formatted_messages, 
-              system_prompt, 
-              tool_name, 
-              tool_params, 
-              tool_result, 
+              formatted_messages,
+              system_prompt,
+              tool_name,
+              tool_params,
+              tool_result,
               options
             )
-            
+
             # Save final response to history
-            add_message('assistant', final_response)
-            
+            add_message(AgentResponse.new(content: final_response))
+
             return final_response
           end
         end
-        
+
         # If we couldn't extract and follow up with tool calls,
         # fall back to the original behavior
         response = process_tool_calls(response)
       end
 
-      # Save response to history
-      add_message('assistant', response)
+    end
 
-      # Return the response
+    # Handle non-streaming message requests
+    def send_message_static(content, options = {})
+      message = UserMessage.new(content:)
+      add_message(message)
+
+      response = call_api(message)
+      add_message(response)
+
       response
+    end
+
+    def call_api(message)
+      formatted_messages = format_messages_for_api
+      system_prompt = build_system_prompt
+      api_tools = @tools.empty? ? nil : format_tools_for_api
+
+      # Call API (non-streaming)
+      result = @api_client.call(formatted_messages, system_prompt, options.merge(tools: api_tools))
+      AgentResponse.new(content: result)
     end
 
     # Handle streaming message requests
     def send_message_streaming(message, options = {}, &block)
-      add_message('user', message)
+      add_message(UserMessage.new(content: message))
 
       # Prepare system prompt
       system_prompt = build_system_prompt
@@ -165,7 +161,7 @@ module ActiveIntelligence
       response = streaming_with_tool_processing(formatted_messages, system_prompt, options.merge(tools: api_tools), &block)
       
       # Save response to history
-      add_message('assistant', response)
+      add_message(AgentResponse.new(content: response))
       
       # Return the response
       response
@@ -199,13 +195,13 @@ module ActiveIntelligence
       prompt
     end
 
-    def add_message(role, content)
-      @messages << { role: role, content: content }
+    def add_message(message)
+      @messages << message
     end
 
     def format_messages_for_api
       @messages.map do |msg|
-        { role: msg[:role], content: msg[:content] }
+        { role: msg.role, content: msg.content }
       end
     end
 
@@ -373,7 +369,7 @@ module ActiveIntelligence
     end
     
     # Continue the conversation with the tool result
-    def continue_conversation_with_tool_result(messages, system_prompt, tool_name, tool_params, tool_result, options, &block)
+    def continue_conversation_with_tool_result(messages, system_prompt, tool_name, tool_params, tool_result, options)
       # Format the tool name for display
       display_name = tool_name.to_s.split('::').last
       
@@ -385,18 +381,10 @@ module ActiveIntelligence
         { role: 'assistant', content: "I'll use the #{display_name} tool." },
         { role: 'user', content: tool_result_content }
       ]
-      
-      # Determine if we're in streaming or non-streaming mode based on block presence
-      if block_given?
-        # Streaming mode - Call the API with streaming and yield chunks
-        @api_client.call_streaming(updated_messages, system_prompt, options) do |chunk|
-          yield chunk
-        end
-      else
-        # Non-streaming mode - Call the API normally and return the full response
-        final_response = @api_client.call(updated_messages, system_prompt, options)
-        return final_response
-      end
+
+      # Non-streaming mode - Call the API normally and return the full response
+      final_response = @api_client.call(updated_messages, system_prompt, options)
+      final_response
     end
   end
 end

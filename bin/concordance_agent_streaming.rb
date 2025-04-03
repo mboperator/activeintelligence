@@ -24,18 +24,17 @@ agent = SeminaryProfessor.new(
   objective: "Your objective is to chat with the user in a way that glorifies Christ"
 )
 
-loop do
-  print "> "
-  input = gets.chomp
+# Example 1: Standard request (non-streaming)
+# response = agent.send_message("What does the Bible say about being a father?")
+# puts "FULL RESPONSE:\n#{response}"
 
-  # Exit condition
-  break if input.downcase == 'exit'
+# Example 2: Streaming request
+puts "Asking: What does the Bible say about being a father?"
+puts "Response:"
 
-  # Streaming response
-  puts "\nResponse:"
-  response = agent.send_message(input)
-  puts response.content
-  puts "\n\n"
+agent.send_message("What does the Bible say about being a father?", stream: true) do |chunk|
+  print chunk
+  $stdout.flush  # Ensure the output is displayed immediately
 end
 
 puts "\n\nDone!"
