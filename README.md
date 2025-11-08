@@ -1,25 +1,42 @@
 # ActiveIntelligence
 
-A gem for building AI agents.
+A Ruby gem for building AI agents powered by Claude (Anthropic's LLM). Create conversational agents with tool-calling capabilities, memory management, and streaming support using a clean, intuitive DSL.
+
+> **For AI Coding Agents**: See [CLAUDE.md](CLAUDE.md) for a comprehensive cheat sheet and development guide.
+
+## Features
+
+- **Clean DSL**: Define agents and tools with an intuitive, declarative syntax
+- **Tool Calling**: Give your agents custom capabilities with parameter validation
+- **Streaming Support**: Real-time streaming responses with Server-Sent Events
+- **Memory Management**: Built-in conversation history tracking
+- **Error Handling**: Comprehensive error handling with custom handlers
+- **Type Safety**: Automatic parameter validation and JSON schema generation
+- **Claude Integration**: First-class support for Anthropic's Claude models
 
 ## Installation
 
 Add this line to your application's Gemfile:
 
 ```ruby
-gem 'activeintelligence'
+gem 'activeintelligence.rb'
 ```
 
 And then execute:
 
-```
+```bash
 $ bundle install
 ```
 
 Or install it yourself as:
 
+```bash
+$ gem install activeintelligence.rb
 ```
-$ gem install activeintelligence
+
+**Environment Setup**:
+```bash
+export ANTHROPIC_API_KEY="your-api-key-here"
 ```
 
 ## Quick Start
@@ -86,26 +103,27 @@ agent = ResearchAgent.new(
 
 ### Tools
 
-Tools allow your agent to perform actions and access external data.
+Tools allow your agent to perform actions and access external data. Tools inherit from `ActiveIntelligence::Tool` and use a DSL to define their interface.
 
-#### Creating Query Tools (read-only)
+#### Creating a Tool
 
 ```ruby
-class WeatherTool < ActiveIntelligence::QueryTool
+class WeatherTool < ActiveIntelligence::Tool
   name "get_weather"  # Custom name (defaults to underscored class name)
   description "Get current weather for a location"
-  
-  # Define parameters
-  param :location, type: String, required: true, 
+
+  # Define parameters with type validation
+  param :location, type: String, required: true,
         description: "City name or coordinates"
   param :unit, type: String, required: false, default: "celsius",
         enum: ["celsius", "fahrenheit"],
         description: "Temperature unit"
-        
+
   def execute(params)
-    # Implement API call or data lookup
+    # Implement your tool logic here
+    # Access validated params via hash: params[:location], params[:unit]
     temp = call_weather_api(params[:location], params[:unit])
-    
+
     # Return formatted success response
     success_response({
       location: params[:location],
@@ -113,63 +131,53 @@ class WeatherTool < ActiveIntelligence::QueryTool
       unit: params[:unit]
     })
   end
-  
-  # Handle specific errors (optional)
+
+  # Optional: Handle specific errors
   rescue_from WeatherApiError do |e, params|
     error_response("Weather data not available: #{e.message}")
+  end
+
+  private
+
+  def call_weather_api(location, unit)
+    # Your API logic here
   end
 end
 ```
 
-#### Creating Command Tools (with side effects)
+#### Tool Response Format
+
+Tools must return structured responses:
 
 ```ruby
-class SaveNoteTool < ActiveIntelligence::CommandTool
-  name "save_note"
-  description "Save a note to the database"
-  
-  param :title, type: String, required: true
-  param :content, type: String, required: true
-  param :tags, type: Array, required: false
-  
-  def execute(params)
-    # Create a record in the database
-    note = Note.create!(
-      title: params[:title],
-      content: params[:content],
-      tags: params[:tags]
-    )
-    
-    success_response({
-      id: note.id,
-      title: note.title,
-      status: "saved"
-    })
-  end
-end
+# Success response
+success_response({ key: "value", data: {...} })
+# Returns: { success: true, data: { key: "value", data: {...} } }
+
+# Error response
+error_response("Something went wrong", details: { code: 500 })
+# Returns: { error: true, message: "Something went wrong", details: { code: 500 } }
 ```
 
 ### Advanced Usage
 
-#### Streaming with Tool Calls
+#### Streaming Responses
 
 ```ruby
-# Handle streaming with tool calls
-agent.send_message("What's the weather in London?", stream: true) do |chunk|
-  # Tool calls are sent as specially formatted chunks
-  if chunk.start_with?("[") && chunk.end_with?("]")
-    puts "\nExecuting tool: #{chunk}"
-  else
-    print chunk
-    $stdout.flush
-  end
+# Streaming responses with real-time output
+agent.send_message("Tell me a story about robots", stream: true) do |chunk|
+  print chunk
+  $stdout.flush
 end
+
+# Note: Tool calls are handled automatically in streaming mode
+# The agent will detect tool use, execute the tool, and continue streaming
 ```
 
 #### Error Handling
 
 ```ruby
-class DataTool < ActiveIntelligence::QueryTool
+class DataTool < ActiveIntelligence::Tool
   # ...
   
   # Define custom error handling
@@ -233,22 +241,156 @@ ActiveIntelligence.configure do |config|
 end
 ```
 
+## Supported Models
+
+ActiveIntelligence works with Anthropic's Claude models:
+
+- `claude-3-opus-20240229` - Most capable model
+- `claude-3-sonnet-20240229` - Balanced performance
+- `claude-3-5-sonnet-latest` - Latest Sonnet version
+- `claude-3-5-haiku-latest` - Fastest, most cost-effective
+
 ## Environment Variables
 
-- `ANTHROPIC_API_KEY`: Your Anthropic API key for Claude models
+- `ANTHROPIC_API_KEY`: Your Anthropic API key (required)
 
 ## Examples
 
-See examples directory for complete implementations:
-- Weather assistant
-- Customer support agent
-- Research assistant
-- Task management agent
+See the `bin/` directory for working examples:
+
+- **Dad Joke Agent** (`bin/dad_joke_agent.rb`) - Simple agent with custom tool
+- **Dad Joke Agent (Streaming)** (`bin/dad_joke_agent_streaming.rb`) - Streaming version
+- **Concordance Agent** (`bin/concordance_agent.rb`) - Seminary professor assistant
+- **Concordance Agent (Streaming)** (`bin/concordance_agent_streaming.rb`) - Streaming version
+
+Run an example:
+```bash
+export ANTHROPIC_API_KEY="your-key-here"
+ruby bin/dad_joke_agent.rb
+```
+
+## Development
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/activeintelligence.git
+cd activeintelligence
+
+# Install dependencies
+bundle install
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+rake spec
+
+# Run linter
+rake rubocop
+
+# Run both tests and linter
+rake
+```
+
+### Building the Gem
+
+```bash
+# Build
+rake build
+
+# Install locally
+rake install
+
+# The gem will be in pkg/activeintelligence.rb-0.0.1.gem
+```
+
+## Architecture
+
+```
+┌─────────────────────┐
+│   Your Agent Class  │  (inherits from ActiveIntelligence::Agent)
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  Agent (agent.rb)   │  Manages conversation, tool execution
+└──────────┬──────────┘
+           │
+           ├──────────────────────┬─────────────────────┐
+           ▼                      ▼                     ▼
+┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+│  ClaudeClient    │   │  Your Tools      │   │  Messages        │
+│  (API Client)    │   │  (Custom Logic)  │   │  (History)       │
+└──────────────────┘   └──────────────────┘   └──────────────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  Anthropic Claude    │
+│  Messages API        │
+└──────────────────────┘
+```
+
+## Project Structure
+
+```
+activeintelligence/
+├── lib/
+│   ├── activeintelligence/
+│   │   ├── agent.rb              # Core agent class with DSL
+│   │   ├── tool.rb               # Base tool class with validation
+│   │   ├── api_clients/
+│   │   │   ├── base_client.rb    # Abstract API client
+│   │   │   └── claude_client.rb  # Claude API implementation
+│   │   ├── messages.rb           # Message type system
+│   │   ├── config.rb             # Configuration management
+│   │   └── errors.rb             # Error classes
+│   └── activeintelligence.rb     # Main entry point
+├── bin/                          # Example agents
+├── spec/                         # Test files
+├── CLAUDE.md                     # AI agent development guide
+└── README.md                     # This file
+```
+
+## How It Works
+
+1. **Agent receives message** → Added to conversation history
+2. **Agent formats messages** → Converts to Claude API format
+3. **API client calls Claude** → Sends messages + tool schemas
+4. **Claude responds** → Either text or tool_use block
+5. **If tool_use**:
+   - Agent executes the tool with validated params
+   - Tool result added to history
+   - Agent calls Claude again with result
+6. **Final response** → Returned to user
 
 ## Contributing
 
-1. Fork it
-2. Create your feature branch (`git checkout -b feature/my-new-feature`)
-3. Commit your changes (`git commit -am 'Add some feature'`)
-4. Push to the branch (`git push origin feature/my-new-feature`)
-5. Create new Pull Request
+Contributions are welcome! Here's how to get started:
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes and add tests
+4. Run the test suite (`rake spec`)
+5. Run the linter (`rake rubocop`)
+6. Commit your changes (`git commit -am 'Add amazing feature'`)
+7. Push to the branch (`git push origin feature/amazing-feature`)
+8. Open a Pull Request
+
+### For AI Coding Agents
+
+If you're an AI agent working on this codebase, please read [CLAUDE.md](CLAUDE.md) first for a comprehensive development guide.
+
+## License
+
+The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
+
+## Author
+
+Marcus Bernales
+
+## Version
+
+0.0.1
