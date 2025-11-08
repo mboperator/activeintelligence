@@ -184,7 +184,25 @@ module ActiveIntelligence
 
     def format_messages_for_api
       @messages.map do |msg|
-        { role: msg.role, content: msg.content }
+        if msg.is_a?(ToolResponse)
+          # Use structured format for tool results
+          {
+            role: msg.role,
+            content: [msg.to_api_format]
+          }
+        elsif msg.is_a?(AgentResponse) && !msg.tool_calls.empty?
+          # Use structured format for responses with tool calls
+          {
+            role: msg.role,
+            content: msg.to_api_format
+          }
+        else
+          # Simple text messages stay the same
+          {
+            role: msg.role,
+            content: msg.content
+          }
+        end
       end
     end
 

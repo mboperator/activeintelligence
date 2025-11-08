@@ -18,11 +18,12 @@ module ActiveIntelligence
   end
 
   class ToolResponse < Message
-    attr_accessor :result, :content, :tool_name, :tool_use_id
-    def initialize(tool_name:, result:, tool_use_id:)
+    attr_accessor :result, :content, :tool_name, :tool_use_id, :is_error
+    def initialize(tool_name:, result:, tool_use_id:, is_error: false)
       @tool_name = tool_name
       @result = result
       @tool_use_id = tool_use_id
+      @is_error = is_error
 
       super(content: tool_response_content)
     end
@@ -32,6 +33,16 @@ module ActiveIntelligence
 
     def tool_response_content
       "Tool #{tool_name} returned: #{format_tool_result(result)}"
+    end
+
+    # Convert to structured format for Claude API
+    def to_api_format
+      {
+        type: "tool_result",
+        tool_use_id: @tool_use_id,
+        content: @content,
+        is_error: @is_error
+      }
     end
 
     private
@@ -63,6 +74,28 @@ module ActiveIntelligence
 
     def role
       "assistant"
+    end
+
+    # Convert to structured format for Claude API
+    def to_api_format
+      content_blocks = []
+
+      # Add text content if present
+      unless @content.nil? || @content.empty?
+        content_blocks << { type: "text", text: @content }
+      end
+
+      # Add tool_use blocks if present
+      @tool_calls.each do |tc|
+        content_blocks << {
+          type: "tool_use",
+          id: tc[:id],
+          name: tc[:name],
+          input: tc[:parameters]
+        }
+      end
+
+      content_blocks
     end
   end
 end
