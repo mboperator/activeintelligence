@@ -100,9 +100,12 @@ module ActiveIntelligence
             tool_calls = result["content"].select { |message| message["type"] == "tool_use" }
             content = result["content"].select { |message| message["type"] == "text" }
 
+            # Safely extract text content (may be empty if only tool calls)
+            text_content = content.first&.dig("text") || ""
+
             if tool_calls && !tool_calls.empty?
               return {
-                content: content[0]["text"],
+                content: text_content,
                 tool_calls: tool_calls.map do |tc|
                   {
                     name: tc["name"],
@@ -114,7 +117,7 @@ module ActiveIntelligence
 
             # Standard text response
             return {
-              content: content[0]["text"],
+              content: text_content,
               tool_calls: []
             }
           end
