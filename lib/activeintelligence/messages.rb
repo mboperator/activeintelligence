@@ -18,10 +18,11 @@ module ActiveIntelligence
   end
 
   class ToolResponse < Message
-    attr_accessor :result, :content, :tool_name
-    def initialize(tool_name:, result:)
+    attr_accessor :result, :content, :tool_name, :tool_use_id
+    def initialize(tool_name:, result:, tool_use_id:)
       @tool_name = tool_name
       @result = result
+      @tool_use_id = tool_use_id
 
       super(content: tool_response_content)
     end

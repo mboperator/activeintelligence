@@ -108,6 +108,7 @@ module ActiveIntelligence
                 content: text_content,
                 tool_calls: tool_calls.map do |tc|
                   {
+                    id: tc["id"],
                     name: tc["name"],
                     parameters: tc["input"]
                   }
@@ -130,9 +131,7 @@ module ActiveIntelligence
 
       def process_streaming_response(response, &block)
         full_response = ""
-        tool_call_detected = false
-        tool_call_name = nil
-        tool_call_params = {}
+        tool_calls = []
 
         buffer = ""
 
@@ -169,30 +168,26 @@ module ActiveIntelligence
               yield text if block_given?
             end
             if json_data["type"] == "content_block_start" && json_data["content_block"]["type"] == "tool_use"
-              tool_call_detected = true
               tool_call = json_data["content_block"]
-              tool_call_name = tool_call["name"]
-              tool_call_params = tool_call["input"]
+              tool_calls << {
+                id: tool_call["id"],
+                name: tool_call["name"],
+                input: tool_call["input"]
+              }
             end
           end
         end
 
-        if tool_call_detected
-          {
-            content: full_response,
-            tool_calls: [
-              {
-                name: tool_call_name,
-                parameters: tool_call_params
-              }
-            ]
-          }
-        else
-          {
-            content: full_response,
-            tool_calls: []
-          }
-        end
+        {
+          content: full_response,
+          tool_calls: tool_calls.map do |tc|
+            {
+              id: tc[:id],
+              name: tc[:name],
+              parameters: tc[:input]
+            }
+          end
+        }
       end
     end
   end

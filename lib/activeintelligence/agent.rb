@@ -75,12 +75,13 @@ module ActiveIntelligence
       else
         # Handle structured tool calls from API response
         tool_call = last_message.tool_calls.first
+        tool_use_id = tool_call[:id]
         tool_name = tool_call[:name]
         tool_params = tool_call[:parameters]
 
         # Execute the tool
         tool_output = execute_tool_call(tool_name, tool_params)
-        tool_response = ToolResponse.new(tool_name:, result: tool_output)
+        tool_response = ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
         add_message(tool_response)
         response = call_api
         add_message(response)
@@ -118,12 +119,13 @@ module ActiveIntelligence
       else
         # Handle structured tool calls from API response
         tool_call = last_message.tool_calls.first
+        tool_use_id = tool_call[:id]
         tool_name = tool_call[:name]
         tool_params = tool_call[:parameters]
 
         # Execute the tool
         tool_output = execute_tool_call(tool_name, tool_params)
-        tool_response = ToolResponse.new(tool_name:, result: tool_output)
+        tool_response = ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
         add_message(tool_response)
 
         yield "\n\n"
