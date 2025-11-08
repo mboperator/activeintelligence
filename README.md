@@ -41,6 +41,8 @@ export ANTHROPIC_API_KEY="your-api-key-here"
 
 ## Quick Start
 
+### CLI/Standalone Usage
+
 ```ruby
 require 'activeintelligence'
 require_relative 'your_custom_tool'
@@ -56,7 +58,7 @@ class AssistantAgent < ActiveIntelligence::Agent
   model    :claude
   memory   :in_memory
   identity "You are a helpful assistant."
-  
+
   # Register tools (optional)
   tool YourCustomTool
 end
@@ -73,6 +75,62 @@ agent.send_message("Tell me a story", stream: true) do |chunk|
 end
 ```
 
+### Rails Integration
+
+ActiveIntelligence seamlessly integrates with Rails applications for persistent, multi-user conversations.
+
+```bash
+# Add to Gemfile
+gem 'activeintelligence.rb'
+
+# Install and run generator
+bundle install
+rails generate active_intelligence:install
+rails db:migrate
+```
+
+**Create an agent:**
+```ruby
+# app/agents/customer_support_agent.rb
+class CustomerSupportAgent < ActiveIntelligence::Agent
+  model :claude
+  memory :active_record  # Database-backed persistence!
+  identity "You are a helpful customer support agent"
+
+  tool OrderLookupTool
+end
+```
+
+**Use in controllers:**
+```ruby
+# app/controllers/conversations_controller.rb
+class ConversationsController < ApplicationController
+  include ActiveIntelligence::ConversationManageable
+
+  def create
+    @conversation = current_user.active_intelligence_conversations.create!(
+      agent_class: 'CustomerSupportAgent'
+    )
+    render json: { id: @conversation.id }
+  end
+
+  def send_message
+    @conversation = current_user.active_intelligence_conversations.find(params[:id])
+    response = send_agent_message(params[:message], conversation: @conversation)
+    render json: { response: response }
+  end
+end
+```
+
+**Key Features for Rails:**
+- ✅ Database-backed conversation persistence
+- ✅ Multi-user support with user scoping
+- ✅ Streaming via ActionController::Live
+- ✅ Background job support for long-running agents
+- ✅ ActiveRecord models for conversations and messages
+
+📖 **See [RAILS_INTEGRATION.md](RAILS_INTEGRATION.md) for complete Rails documentation.**
+
 ## Core Concepts
 
 ### Agents
@@ -81,10 +139,10 @@ Agents are the central components that interact with the LLM and manage conversa
 
 ```ruby
 class ResearchAgent < ActiveIntelligence::Agent
-  model    :claude      # Currently supported: :claude
-  memory   :in_memory   # Memory strategy
+  model    :claude         # Currently supported: :claude
+  memory   :in_memory      # Memory strategy: :in_memory or :active_record
   identity "You are an expert researcher who finds accurate information."
-  
+
   # Register tools
   tool WebSearchTool
   tool WikipediaTool
@@ -99,6 +157,17 @@ agent = ResearchAgent.new(
     api_key: ENV['ANTHROPIC_API_KEY']
   }
 )
+
+# For Rails with database persistence:
+class RailsAgent < ActiveIntelligence::Agent
+  model    :claude
+  memory   :active_record  # Persists to database
+  identity "You are a helpful assistant"
+end
+
+# Initialize with a conversation record
+conversation = ActiveIntelligence::Conversation.find(123)
+agent = RailsAgent.new(conversation: conversation)
 ```
 
 ### Tools

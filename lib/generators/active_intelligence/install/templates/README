@@ -1,0 +1,74 @@
+===============================================================================
+
+ActiveIntelligence has been installed!
+
+Next steps:
+
+1. Run migrations:
+   rails db:migrate
+
+2. Configure your Anthropic API key:
+
+   Option A - Environment variable (recommended):
+   export ANTHROPIC_API_KEY="sk-ant-..."
+
+   Option B - Rails credentials:
+   rails credentials:edit
+   # Add: anthropic: { api_key: "sk-ant-..." }
+
+3. Create your first agent:
+
+   # app/agents/my_agent.rb
+   class MyAgent < ActiveIntelligence::Agent
+     model :claude
+     memory :active_record
+     identity "You are a helpful assistant"
+
+     # Register your tools
+     # tool MyCustomTool
+   end
+
+4. Use in your controller:
+
+   class ConversationsController < ApplicationController
+     include ActiveIntelligence::ConversationManageable
+
+     def create
+       @conversation = create_conversation(
+         agent_class: 'MyAgent',
+         objective: params[:objective]
+       )
+       render json: { id: @conversation.id }
+     end
+
+     def send_message
+       conversation = find_conversation(params[:id])
+       response = send_agent_message(params[:message], conversation: conversation)
+       render json: { response: response }
+     end
+   end
+
+5. For streaming support:
+
+   class ConversationsController < ApplicationController
+     include ActionController::Live
+     include ActiveIntelligence::ConversationManageable
+
+     def send_message_streaming
+       conversation = find_conversation(params[:id])
+
+       send_agent_message_streaming(params[:message], conversation: conversation)
+     end
+   end
+
+Files created:
+  - config/initializers/active_intelligence.rb
+  - db/migrate/..._create_active_intelligence_conversations.rb
+  - db/migrate/..._create_active_intelligence_messages.rb
+  - app/models/active_intelligence/conversation.rb
+  - app/models/active_intelligence/message.rb
+  - app/controllers/concerns/active_intelligence/conversation_manageable.rb
+
+For more information, visit: https://github.com/yourusername/activeintelligence
+
+===============================================================================

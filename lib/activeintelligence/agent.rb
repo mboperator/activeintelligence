@@ -38,13 +38,22 @@ module ActiveIntelligence
     end
 
     # Instance attributes
-    attr_reader :objective, :messages, :options, :tools
+    attr_reader :objective, :messages, :options, :tools, :conversation
 
-    def initialize(objective: nil, options: {}, tools: nil)
+    def initialize(objective: nil, options: {}, tools: nil, conversation: nil)
       @objective = objective
-      @messages = []
       @options = options
       @tools = tools || self.class.tools.map(&:new)
+      @conversation = conversation
+
+      # Initialize messages based on memory strategy
+      if self.class.memory == :active_record
+        raise ConfigurationError, "Conversation required for :active_record memory" unless @conversation
+        @messages = load_messages_from_db
+      else
+        @messages = []
+      end
+
       setup_api_client
     end
 
@@ -65,6 +74,9 @@ module ActiveIntelligence
     private
 
     def add_message(message)
+      if self.class.memory == :active_record
+        persist_message_to_db(message)
+      end
       @messages << message
     end
 
@@ -207,6 +219,48 @@ module ActiveIntelligence
       else
         "Tool not found: #{tool_name}"
       end
+    end
+
+    # ActiveRecord memory strategy methods
+    def load_messages_from_db
+      return [] unless @conversation.respond_to?(:messages)
+
+      @conversation.messages.order(:created_at).map do |msg|
+        case msg.role
+        when 'user'
+          UserMessage.new(content: msg.content)
+        when 'assistant'
+          tool_calls = msg.tool_calls.is_a?(String) ? JSON.parse(msg.tool_calls) : (msg.tool_calls || [])
+          AgentResponse.new(content: msg.content, tool_calls: tool_calls)
+        when 'tool'
+          result = msg.content.is_a?(String) ? JSON.parse(msg.content) : msg.content
+          ToolResponse.new(tool_name: msg.tool_name, result: result)
+        end
+      end
+    rescue StandardError => e
+      raise ConfigurationError, "Failed to load messages from database: #{e.message}"
+    end
+
+    def persist_message_to_db(message)
+      return unless @conversation.respond_to?(:messages)
+
+      attributes = {
+        role: message.role,
+        content: message.content
+      }
+
+      # Add message-type specific attributes
+      case message
+      when AgentResponse
+        attributes[:tool_calls] = message.tool_calls.to_json if message.tool_calls&.any?
+      when ToolResponse
+        attributes[:tool_name] = message.tool_name
+        attributes[:content] = message.result.to_json
+      end
+
+      @conversation.messages.create!(attributes)
+    rescue StandardError => e
+      raise ConfigurationError, "Failed to persist message to database: #{e.message}"
     end
   end
 end
