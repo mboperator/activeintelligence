@@ -96,6 +96,12 @@ module ActiveIntelligence
           result = safe_parse_json(response.body)
 
           if result && result["content"]
+            # Check stop_reason for issues
+            stop_reason = result["stop_reason"]
+            if stop_reason == "max_tokens"
+              Config.logger.warn "Response was truncated due to max_tokens limit. Consider increasing max_tokens."
+            end
+
             # Check if there are tool calls in the response
             tool_calls = result["content"].select { |message| message["type"] == "tool_use" }
             content = result["content"].select { |message| message["type"] == "text" }
@@ -112,14 +118,16 @@ module ActiveIntelligence
                     name: tc["name"],
                     parameters: tc["input"]
                   }
-                end
+                end,
+                stop_reason: stop_reason
               }
             end
 
             # Standard text response
             return {
               content: text_content,
-              tool_calls: []
+              tool_calls: [],
+              stop_reason: stop_reason
             }
           end
 
@@ -132,6 +140,7 @@ module ActiveIntelligence
       def process_streaming_response(response, &block)
         full_response = ""
         tool_calls = []
+        stop_reason = nil
 
         buffer = ""
 
@@ -175,7 +184,15 @@ module ActiveIntelligence
                 input: tool_call["input"]
               }
             end
+            if json_data["type"] == "message_delta" && json_data["delta"]["stop_reason"]
+              stop_reason = json_data["delta"]["stop_reason"]
+            end
           end
+        end
+
+        # Check stop_reason for issues
+        if stop_reason == "max_tokens"
+          Config.logger.warn "Response was truncated due to max_tokens limit. Consider increasing max_tokens."
         end
 
         {
@@ -186,7 +203,8 @@ module ActiveIntelligence
               name: tc[:name],
               parameters: tc[:input]
             }
-          end
+          end,
+          stop_reason: stop_reason
         }
       end
     end
