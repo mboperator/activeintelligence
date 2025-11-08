@@ -55,15 +55,32 @@ module ActiveIntelligence
       def build_request_params(messages, system_prompt, options)
         params = {
           model: options[:model] || @model,
-          system: system_prompt,
           messages: messages,
           max_tokens: options[:max_tokens] || @max_tokens,
           stream: options[:stream] || false
         }
 
-        # Add tools if provided
+        # Add system prompt with caching if enabled
+        if options[:enable_prompt_caching] != false  # Default to true
+          params[:system] = [
+            {
+              type: "text",
+              text: system_prompt,
+              cache_control: { type: "ephemeral" }
+            }
+          ]
+        else
+          params[:system] = system_prompt
+        end
+
+        # Add tools if provided, with caching on last tool
         if options[:tools] && !options[:tools].empty?
-          params[:tools] = options[:tools]
+          tools = options[:tools].dup
+          # Mark the last tool for caching (most benefit)
+          if options[:enable_prompt_caching] != false && tools.size > 0
+            tools[-1] = tools[-1].merge(cache_control: { type: "ephemeral" })
+          end
+          params[:tools] = tools
         end
 
         params

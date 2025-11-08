@@ -205,7 +205,13 @@ module ActiveIntelligence
 
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
-      response = @api_client.call_streaming(formatted_messages, system_prompt, options.merge(tools: api_tools), &block)
+      # Merge options with default caching setting
+      api_options = options.merge(
+        tools: api_tools,
+        enable_prompt_caching: options[:enable_prompt_caching] != false
+      )
+
+      response = @api_client.call_streaming(formatted_messages, system_prompt, api_options, &block)
       AgentResponse.new(content: response[:content], tool_calls: response[:tool_calls])
     end
 
@@ -214,7 +220,13 @@ module ActiveIntelligence
       system_prompt = build_system_prompt
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
-      result = @api_client.call(formatted_messages, system_prompt, options.merge(tools: api_tools))
+      # Merge options with default caching setting
+      api_options = options.merge(
+        tools: api_tools,
+        enable_prompt_caching: options[:enable_prompt_caching] != false
+      )
+
+      result = @api_client.call(formatted_messages, system_prompt, api_options)
       AgentResponse.new(content: result[:content], tool_calls: result[:tool_calls])
     end
 
