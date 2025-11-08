@@ -6,7 +6,7 @@ module ActiveIntelligence
       claude: {
         model: "claude-3-opus-20240229",
         api_version: "2023-06-01",
-        max_tokens: 1024
+        max_tokens: 4096
       },
       logger: defined?(Rails) ? Rails.logger : Logger.new(STDOUT)
     }
