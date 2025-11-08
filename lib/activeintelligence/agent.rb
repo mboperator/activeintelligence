@@ -70,24 +70,31 @@ module ActiveIntelligence
 
     def process_tool_calls
       last_message = @messages.last
-      if last_message.tool_calls.empty?
-        []
-      else
-        # Handle structured tool calls from API response
-        tool_call = last_message.tool_calls.first
+      return [] if last_message.tool_calls.empty?
+
+      responses = []
+
+      # Execute ALL tool calls from the response
+      tool_results = last_message.tool_calls.map do |tool_call|
         tool_use_id = tool_call[:id]
         tool_name = tool_call[:name]
         tool_params = tool_call[:parameters]
 
         # Execute the tool
         tool_output = execute_tool_call(tool_name, tool_params)
-        tool_response = ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
-        add_message(tool_response)
-        response = call_api
-        add_message(response)
-
-        [tool_response, response]
+        ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
       end
+
+      # Add all tool results to message history
+      tool_results.each { |tr| add_message(tr) }
+      responses += tool_results
+
+      # Single API call with all results
+      response = call_api
+      add_message(response)
+      responses << response
+
+      responses
     end
 
     def send_message_static(content, options = {})
@@ -113,28 +120,30 @@ module ActiveIntelligence
 
     def process_tool_calls_streaming(&block)
       last_message = @messages.last
+      return [] if last_message.tool_calls.empty?
 
-      if last_message.tool_calls.empty?
-        []
-      else
-        # Handle structured tool calls from API response
-        tool_call = last_message.tool_calls.first
+      # Execute ALL tool calls from the response
+      tool_results = last_message.tool_calls.map do |tool_call|
         tool_use_id = tool_call[:id]
         tool_name = tool_call[:name]
         tool_params = tool_call[:parameters]
 
         # Execute the tool
         tool_output = execute_tool_call(tool_name, tool_params)
-        tool_response = ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
-        add_message(tool_response)
+        ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
+      end
 
+      # Add all tool results to message history and yield them
+      tool_results.each do |tool_response|
+        add_message(tool_response)
         yield "\n\n"
         yield tool_response.content
         yield "\n\n"
-
-        response = call_streaming_api(&block)
-        add_message(response)
       end
+
+      # Single API call with all results
+      response = call_streaming_api(&block)
+      add_message(response)
     end
 
     def setup_api_client
