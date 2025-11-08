@@ -90,7 +90,11 @@ module ActiveIntelligence
 
           # Execute the tool
           tool_output = execute_tool_call(tool_name, tool_params)
-          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
+
+          # Check if the tool returned an error
+          is_error = tool_output.is_a?(Hash) && tool_output[:error] == true
+
+          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
         end
 
         # Add all tool results to message history
@@ -148,7 +152,11 @@ module ActiveIntelligence
 
           # Execute the tool
           tool_output = execute_tool_call(tool_name, tool_params)
-          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
+
+          # Check if the tool returned an error
+          is_error = tool_output.is_a?(Hash) && tool_output[:error] == true
+
+          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
         end
 
         # Add all tool results to message history and yield them

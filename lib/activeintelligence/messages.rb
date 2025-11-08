@@ -48,6 +48,14 @@ module ActiveIntelligence
     private
 
     def format_tool_result(result)
+      # Handle error responses
+      if result.is_a?(Hash) && result[:error] == true
+        error_msg = result[:message] || "Tool execution failed"
+        details = result[:details]
+        return details ? "#{error_msg}\nDetails: #{details.inspect}" : error_msg
+      end
+
+      # Handle success responses
       if result.is_a?(Hash) && result[:data] && result[:data].is_a?(Hash)
         result[:data].values.first
       elsif result.is_a?(Hash) && result[:data]
