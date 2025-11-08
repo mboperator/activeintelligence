@@ -69,30 +69,39 @@ module ActiveIntelligence
     end
 
     def process_tool_calls
-      last_message = @messages.last
-      return [] if last_message.tool_calls.empty?
-
+      max_iterations = 25  # Prevent infinite loops
+      iterations = 0
       responses = []
 
-      # Execute ALL tool calls from the response
-      tool_results = last_message.tool_calls.map do |tool_call|
-        tool_use_id = tool_call[:id]
-        tool_name = tool_call[:name]
-        tool_params = tool_call[:parameters]
+      # Keep processing tool calls until Claude responds with text only
+      while !@messages.last.tool_calls.empty?
+        iterations += 1
+        if iterations > max_iterations
+          raise Error, "Maximum tool call iterations (#{max_iterations}) exceeded. Possible infinite loop."
+        end
 
-        # Execute the tool
-        tool_output = execute_tool_call(tool_name, tool_params)
-        ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
+        tool_calls = @messages.last.tool_calls
+
+        # Execute ALL tool calls from the response
+        tool_results = tool_calls.map do |tool_call|
+          tool_use_id = tool_call[:id]
+          tool_name = tool_call[:name]
+          tool_params = tool_call[:parameters]
+
+          # Execute the tool
+          tool_output = execute_tool_call(tool_name, tool_params)
+          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
+        end
+
+        # Add all tool results to message history
+        tool_results.each { |tr| add_message(tr) }
+        responses += tool_results
+
+        # Get next response from Claude
+        response = call_api
+        add_message(response)
+        responses << response
       end
-
-      # Add all tool results to message history
-      tool_results.each { |tr| add_message(tr) }
-      responses += tool_results
-
-      # Single API call with all results
-      response = call_api
-      add_message(response)
-      responses << response
 
       responses
     end
@@ -119,31 +128,41 @@ module ActiveIntelligence
     end
 
     def process_tool_calls_streaming(&block)
-      last_message = @messages.last
-      return [] if last_message.tool_calls.empty?
+      max_iterations = 25  # Prevent infinite loops
+      iterations = 0
 
-      # Execute ALL tool calls from the response
-      tool_results = last_message.tool_calls.map do |tool_call|
-        tool_use_id = tool_call[:id]
-        tool_name = tool_call[:name]
-        tool_params = tool_call[:parameters]
+      # Keep processing tool calls until Claude responds with text only
+      while !@messages.last.tool_calls.empty?
+        iterations += 1
+        if iterations > max_iterations
+          raise Error, "Maximum tool call iterations (#{max_iterations}) exceeded. Possible infinite loop."
+        end
 
-        # Execute the tool
-        tool_output = execute_tool_call(tool_name, tool_params)
-        ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
+        tool_calls = @messages.last.tool_calls
+
+        # Execute ALL tool calls from the response
+        tool_results = tool_calls.map do |tool_call|
+          tool_use_id = tool_call[:id]
+          tool_name = tool_call[:name]
+          tool_params = tool_call[:parameters]
+
+          # Execute the tool
+          tool_output = execute_tool_call(tool_name, tool_params)
+          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:)
+        end
+
+        # Add all tool results to message history and yield them
+        tool_results.each do |tool_response|
+          add_message(tool_response)
+          yield "\n\n"
+          yield tool_response.content
+          yield "\n\n"
+        end
+
+        # Get next response from Claude
+        response = call_streaming_api(&block)
+        add_message(response)
       end
-
-      # Add all tool results to message history and yield them
-      tool_results.each do |tool_response|
-        add_message(tool_response)
-        yield "\n\n"
-        yield tool_response.content
-        yield "\n\n"
-      end
-
-      # Single API call with all results
-      response = call_streaming_api(&block)
-      add_message(response)
     end
 
     def setup_api_client
