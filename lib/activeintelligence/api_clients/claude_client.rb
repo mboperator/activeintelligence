@@ -105,6 +105,14 @@ module ActiveIntelligence
             # Check if there are tool calls in the response
             tool_calls = result["content"].select { |message| message["type"] == "tool_use" }
             content = result["content"].select { |message| message["type"] == "text" }
+            thinking_blocks = result["content"].select { |message| message["type"] == "thinking" }
+
+            # Log thinking blocks for debugging (optional)
+            if !thinking_blocks.empty? && Config.logger
+              thinking_blocks.each do |tb|
+                Config.logger.debug "Claude thinking: #{tb['thinking']}"
+              end
+            end
 
             # Safely extract text content (may be empty if only tool calls)
             text_content = content.first&.dig("text") || ""
@@ -141,6 +149,7 @@ module ActiveIntelligence
         full_response = ""
         tool_calls = []
         stop_reason = nil
+        thinking_content = ""
 
         buffer = ""
 
@@ -176,6 +185,10 @@ module ActiveIntelligence
               # Yield the text chunk to the block
               yield text if block_given?
             end
+            # Capture thinking blocks (don't yield to user)
+            if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "thinking_delta"
+              thinking_content << json_data["delta"]["thinking"] if json_data["delta"]["thinking"]
+            end
             if json_data["type"] == "content_block_start" && json_data["content_block"]["type"] == "tool_use"
               tool_call = json_data["content_block"]
               tool_calls << {
@@ -188,6 +201,11 @@ module ActiveIntelligence
               stop_reason = json_data["delta"]["stop_reason"]
             end
           end
+        end
+
+        # Log thinking content if present
+        if !thinking_content.empty? && Config.logger
+          Config.logger.debug "Claude thinking: #{thinking_content}"
         end
 
         # Check stop_reason for issues
