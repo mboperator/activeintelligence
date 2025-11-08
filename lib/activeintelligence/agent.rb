@@ -231,27 +231,46 @@ module ActiveIntelligence
     end
 
     def format_messages_for_api
-      @messages.map do |msg|
+      formatted = []
+      i = 0
+
+      while i < @messages.length
+        msg = @messages[i]
+
         if msg.is_a?(ToolResponse)
-          # Use structured format for tool results
-          {
-            role: msg.role,
-            content: [msg.to_api_format]
+          # Collect consecutive tool responses into a single message
+          tool_results = [msg]
+          j = i + 1
+          while j < @messages.length && @messages[j].is_a?(ToolResponse)
+            tool_results << @messages[j]
+            j += 1
+          end
+
+          # Combine all tool results into one message with multiple content blocks
+          formatted << {
+            role: "user",
+            content: tool_results.map(&:to_api_format)
           }
+
+          i = j  # Skip past all the tool responses we just processed
         elsif msg.is_a?(AgentResponse) && !msg.tool_calls.empty?
           # Use structured format for responses with tool calls
-          {
+          formatted << {
             role: msg.role,
             content: msg.to_api_format
           }
+          i += 1
         else
           # Simple text messages stay the same
-          {
+          formatted << {
             role: msg.role,
             content: msg.content
           }
+          i += 1
         end
       end
+
+      formatted
     end
 
     def format_tools_for_api
