@@ -1,5 +1,3 @@
-require 'pry'
-
 # lib/active_intelligence/agent.rb
 module ActiveIntelligence
   class Agent
