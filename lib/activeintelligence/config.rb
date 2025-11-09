@@ -1,4 +1,6 @@
 # lib/active_intelligence/config.rb
+require 'logger'
+
 module ActiveIntelligence
   module Config
     # Default configurations
