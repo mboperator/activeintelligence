@@ -167,6 +167,7 @@ module ActiveIntelligence
         tool_calls = []
         stop_reason = nil
         thinking_content = ""
+        current_tool_input = {}  # Track tool inputs by index
 
         buffer = ""
 
@@ -206,18 +207,40 @@ module ActiveIntelligence
             if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "thinking_delta"
               thinking_content << json_data["delta"]["thinking"] if json_data["delta"]["thinking"]
             end
+            # Capture tool_use block start
             if json_data["type"] == "content_block_start" && json_data["content_block"]["type"] == "tool_use"
               tool_call = json_data["content_block"]
+              index = json_data["index"]
               tool_calls << {
+                index: index,
                 id: tool_call["id"],
                 name: tool_call["name"],
-                input: tool_call["input"]
+                input: ""  # Will be accumulated from delta events
               }
+              current_tool_input[index] = ""
+            end
+            # Accumulate tool input from delta events
+            if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "input_json_delta"
+              index = json_data["index"]
+              partial_json = json_data["delta"]["partial_json"]
+              current_tool_input[index] ||= ""
+              current_tool_input[index] << partial_json
             end
             if json_data["type"] == "message_delta" && json_data["delta"]["stop_reason"]
               stop_reason = json_data["delta"]["stop_reason"]
             end
           end
+        end
+
+        # Parse accumulated tool inputs
+        tool_calls.each do |tc|
+          index = tc[:index]
+          if current_tool_input[index] && !current_tool_input[index].empty?
+            tc[:input] = safe_parse_json(current_tool_input[index]) || {}
+          else
+            tc[:input] = {}
+          end
+          tc.delete(:index)  # Remove the index, we don't need it anymore
         end
 
         # Log thinking content if present
