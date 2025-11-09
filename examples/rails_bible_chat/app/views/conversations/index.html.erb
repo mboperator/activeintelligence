@@ -1,0 +1,44 @@
+<div class="sidebar">
+  <h3>Recent Conversations</h3>
+  <% if @conversations.any? %>
+    <ul class="conversation-list">
+      <% @conversations.each do |conversation| %>
+        <li onclick="window.location.href='<%= conversation_path(conversation) %>'">
+          <strong>Conversation #<%= conversation.id %></strong>
+          <br>
+          <small><%= conversation.created_at.strftime('%B %d, %Y at %I:%M %p') %></small>
+        </li>
+      <% end %>
+    </ul>
+  <% else %>
+    <p>No conversations yet. Start one below!</p>
+  <% end %>
+</div>
+
+<div style="margin: 20px 0;">
+  <%= form_with url: conversations_path, method: :post, local: false, id: "new-conversation-form" do %>
+    <button type="submit" class="new-conversation">+ Start New Bible Study Conversation</button>
+  <% end %>
+</div>
+
+<script>
+  document.getElementById('new-conversation-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    fetch('<%= conversations_path %>', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
+    })
+    .then(response => response.json())
+    .then(data => {
+      window.location.href = '/conversations/' + data.id;
+    })
+    .catch(error => {
+      console.error('Error:', error);
+      alert('Failed to create conversation');
+    });
+  });
+</script>

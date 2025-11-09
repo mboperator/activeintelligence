@@ -1,0 +1,155 @@
+<div style="margin-bottom: 20px;">
+  <a href="<%= root_path %>" style="color: #007bff; text-decoration: none;">&larr; Back to Conversations</a>
+  <h2 style="margin-top: 10px;">Conversation #<%= @conversation.id %></h2>
+  <p style="color: #666; font-size: 14px;">Chat with the Bible Study Assistant</p>
+</div>
+
+<div class="chat-container">
+  <div class="messages" id="messages">
+    <% @messages.each do |message| %>
+      <div class="message <%= message.role %>">
+        <div class="message-role"><%= message.role %></div>
+        <div class="message-content">
+          <% if message.role == 'tool' %>
+            <strong>🔧 Tool: <%= message.tool_name %></strong><br>
+            <%= simple_format(message.content) %>
+          <% else %>
+            <%= simple_format(message.content) %>
+          <% end %>
+        </div>
+      </div>
+    <% end %>
+
+    <% if @messages.empty? %>
+      <div style="text-align: center; padding: 40px; color: #666;">
+        <h3>Welcome to Bible Study Chat!</h3>
+        <p style="margin-top: 10px;">Ask me anything about the Bible. I can look up specific verses and help you understand their meaning.</p>
+        <p style="margin-top: 10px; font-size: 14px;">
+          Try asking: "Can you show me John 3:16?" or "What does Psalm 23 say?"
+        </p>
+      </div>
+    <% end %>
+  </div>
+
+  <div class="input-area">
+    <form class="input-form" id="message-form">
+      <input
+        type="text"
+        id="message-input"
+        placeholder="Ask about Bible verses, passages, or themes..."
+        autocomplete="off"
+      />
+      <button type="submit" id="send-button">Send</button>
+    </form>
+  </div>
+</div>
+
+<script>
+  const conversationId = <%= @conversation.id %>;
+  const messagesContainer = document.getElementById('messages');
+  const messageForm = document.getElementById('message-form');
+  const messageInput = document.getElementById('message-input');
+  const sendButton = document.getElementById('send-button');
+
+  let isProcessing = false;
+
+  // Auto-scroll to bottom
+  function scrollToBottom() {
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
+
+  // Add message to UI
+  function addMessage(role, content, toolName = null) {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${role}`;
+
+    const roleLabel = document.createElement('div');
+    roleLabel.className = 'message-role';
+    roleLabel.textContent = role;
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+
+    if (role === 'tool' && toolName) {
+      contentDiv.innerHTML = `<strong>🔧 Tool: ${toolName}</strong><br>${content}`;
+    } else {
+      contentDiv.textContent = content;
+    }
+
+    messageDiv.appendChild(roleLabel);
+    messageDiv.appendChild(contentDiv);
+    messagesContainer.appendChild(messageDiv);
+
+    scrollToBottom();
+    return contentDiv;
+  }
+
+  // Handle form submission with streaming
+  messageForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    if (isProcessing || !messageInput.value.trim()) return;
+
+    const message = messageInput.value.trim();
+    messageInput.value = '';
+    isProcessing = true;
+    sendButton.disabled = true;
+    sendButton.textContent = 'Sending...';
+
+    // Add user message
+    addMessage('user', message);
+
+    try {
+      // Create assistant message container for streaming
+      const assistantContent = addMessage('assistant', '');
+
+      // Use streaming endpoint
+      const response = await fetch(`/conversations/${conversationId}/send_message_streaming?message=${encodeURIComponent(message)}`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'text/event-stream'
+        }
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop(); // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.substring(6);
+            if (data === '[DONE]') {
+              continue;
+            }
+
+            // Append chunk to assistant message
+            assistantContent.textContent += data;
+            scrollToBottom();
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      addMessage('assistant', 'Sorry, there was an error processing your message.');
+    } finally {
+      isProcessing = false;
+      sendButton.disabled = false;
+      sendButton.textContent = 'Send';
+      messageInput.focus();
+    }
+  });
+
+  // Initial scroll
+  scrollToBottom();
+
+  // Focus input on load
+  messageInput.focus();
+</script>
