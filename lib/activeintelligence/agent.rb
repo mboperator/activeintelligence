@@ -104,7 +104,7 @@ module ActiveIntelligence
           # Check if the tool returned an error
           is_error = tool_output.is_a?(Hash) && tool_output[:error] == true
 
-          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
+          Messages::ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
         end
 
         # Add all tool results to message history
@@ -121,7 +121,7 @@ module ActiveIntelligence
     end
 
     def send_message_static(content, options = {})
-      message = UserMessage.new(content:)
+      message = Messages::UserMessage.new(content:)
       add_message(message)
 
       response = call_api
@@ -132,7 +132,7 @@ module ActiveIntelligence
 
     # Handle streaming message requests
     def send_message_streaming(content, options = {}, &block)
-      message = UserMessage.new(content:)
+      message = Messages::UserMessage.new(content:)
       add_message(message)
 
       response = call_streaming_api(&block)
@@ -166,7 +166,7 @@ module ActiveIntelligence
           # Check if the tool returned an error
           is_error = tool_output.is_a?(Hash) && tool_output[:error] == true
 
-          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
+          Messages::ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
         end
 
         # Add all tool results to message history and yield them
@@ -222,7 +222,7 @@ module ActiveIntelligence
       )
 
       response = @api_client.call_streaming(formatted_messages, system_prompt, api_options, &block)
-      AgentResponse.new(content: response[:content], tool_calls: response[:tool_calls])
+      Messages::AgentResponse.new(content: response[:content], tool_calls: response[:tool_calls])
     end
 
     def call_api
@@ -247,11 +247,11 @@ module ActiveIntelligence
       while i < @messages.length
         msg = @messages[i]
 
-        if msg.is_a?(ToolResponse)
+        if msg.is_a?(Messages::ToolResponse)
           # Collect consecutive tool responses into a single message
           tool_results = [msg]
           j = i + 1
-          while j < @messages.length && @messages[j].is_a?(ToolResponse)
+          while j < @messages.length && @messages[j].is_a?(Messages::ToolResponse)
             tool_results << @messages[j]
             j += 1
           end
@@ -263,7 +263,7 @@ module ActiveIntelligence
           }
 
           i = j  # Skip past all the tool responses we just processed
-        elsif msg.is_a?(AgentResponse) && !msg.tool_calls.empty?
+        elsif msg.is_a?(Messages::AgentResponse) && !msg.tool_calls.empty?
           # Use structured format for responses with tool calls
           formatted << {
             role: msg.role,
@@ -313,13 +313,13 @@ module ActiveIntelligence
       @conversation.messages.order(:created_at).map do |msg|
         case msg.role
         when 'user'
-          UserMessage.new(content: msg.content)
+          Messages::UserMessage.new(content: msg.content)
         when 'assistant'
           tool_calls = msg.tool_calls.is_a?(String) ? JSON.parse(msg.tool_calls) : (msg.tool_calls || [])
-          AgentResponse.new(content: msg.content, tool_calls: tool_calls)
+          Messages::AgentResponse.new(content: msg.content, tool_calls: tool_calls)
         when 'tool'
           result = msg.content.is_a?(String) ? JSON.parse(msg.content) : msg.content
-          ToolResponse.new(tool_name: msg.tool_name, result: result)
+          Messages::ToolResponse.new(tool_name: msg.tool_name, result: result)
         end
       end
     rescue StandardError => e
@@ -336,9 +336,9 @@ module ActiveIntelligence
 
       # Add message-type specific attributes
       case message
-      when AgentResponse
+      when Messages::AgentResponse
         attributes[:tool_calls] = message.tool_calls.to_json if message.tool_calls&.any?
-      when ToolResponse
+      when Messages::ToolResponse
         attributes[:tool_name] = message.tool_name
         attributes[:content] = message.result.to_json
       end
