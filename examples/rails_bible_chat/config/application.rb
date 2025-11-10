@@ -16,6 +16,5 @@ module RailsBibleChat
     # Ensure all custom paths are eager loaded
     config.eager_load_paths << Rails.root.join("app", "agents")
     config.eager_load_paths << Rails.root.join("app", "tools")
-    config.eager_load_paths << Rails.root.join("app", "models", "active_intelligence")
   end
 end
