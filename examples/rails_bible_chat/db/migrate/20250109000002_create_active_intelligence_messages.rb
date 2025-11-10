@@ -6,6 +6,7 @@ class CreateActiveIntelligenceMessages < ActiveRecord::Migration[7.1]
       t.text :content
       t.json :tool_calls, default: []
       t.string :tool_name
+      t.string :tool_use_id
       t.json :metadata, default: {}
 
       t.timestamps

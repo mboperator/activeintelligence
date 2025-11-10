@@ -311,15 +311,15 @@ module ActiveIntelligence
       return [] unless @conversation.respond_to?(:messages)
 
       @conversation.messages.order(:created_at).map do |msg|
-        case msg.role
-        when 'user'
-          Messages::UserMessage.new(content: msg.content)
-        when 'assistant'
-          tool_calls = msg.tool_calls.is_a?(String) ? JSON.parse(msg.tool_calls) : (msg.tool_calls || [])
+        # Check if this is a tool response by presence of tool_use_id
+        if msg.tool_use_id.present?
+          result = msg.content.is_a?(String) ? JSON.parse(msg.content, symbolize_names: true) : msg.content
+          Messages::ToolResponse.new(tool_name: msg.tool_name, result: result, tool_use_id: msg.tool_use_id)
+        elsif msg.role == 'assistant'
+          tool_calls = msg.tool_calls.is_a?(String) ? JSON.parse(msg.tool_calls, symbolize_names: true) : (msg.tool_calls || [])
           Messages::AgentResponse.new(content: msg.content, tool_calls: tool_calls)
-        when 'tool'
-          result = msg.content.is_a?(String) ? JSON.parse(msg.content) : msg.content
-          Messages::ToolResponse.new(tool_name: msg.tool_name, result: result)
+        else
+          Messages::UserMessage.new(content: msg.content)
         end
       end
     rescue StandardError => e
@@ -340,6 +340,7 @@ module ActiveIntelligence
         attributes[:tool_calls] = message.tool_calls.to_json if message.tool_calls&.any?
       when Messages::ToolResponse
         attributes[:tool_name] = message.tool_name
+        attributes[:tool_use_id] = message.tool_use_id
         attributes[:content] = message.result.to_json
       end
 
