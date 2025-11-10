@@ -1,0 +1,17 @@
+class CreateActiveIntelligenceMessages < ActiveRecord::Migration[7.1]
+  def change
+    create_table :active_intelligence_messages do |t|
+      t.references :conversation, null: false, foreign_key: { to_table: :active_intelligence_conversations }, index: true
+      t.string :role, null: false
+      t.text :content
+      t.json :tool_calls, default: []
+      t.string :tool_name
+      t.json :metadata, default: {}
+
+      t.timestamps
+    end
+
+    add_index :active_intelligence_messages, :role
+    add_index :active_intelligence_messages, [:conversation_id, :created_at]
+  end
+end
