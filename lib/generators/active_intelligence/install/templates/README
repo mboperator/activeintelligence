@@ -1,0 +1,80 @@
+===============================================================================
+
+ActiveIntelligence has been installed!
+
+Next steps:
+
+1. Run migrations:
+   rails db:migrate
+
+2. Configure your Anthropic API key:
+
+   Option A - Environment variable (recommended):
+   export ANTHROPIC_API_KEY="sk-ant-..."
+
+   Option B - Rails credentials:
+   rails credentials:edit
+   # Add: anthropic: { api_key: "sk-ant-..." }
+
+3. Create your first agent:
+
+   # app/agents/my_agent.rb
+   class MyAgent < ActiveIntelligence::Agent
+     model :claude
+     memory :active_record
+     identity "You are a helpful assistant"
+
+     # Register your tools
+     # tool MyCustomTool
+   end
+
+4. Use ActiveIntelligence models in your controller:
+
+   class ConversationsController < ApplicationController
+     def create
+       @conversation = ActiveIntelligence::Conversation.create!(
+         agent_class: 'MyAgent',
+         objective: params[:objective]
+       )
+       render json: { id: @conversation.id }
+     end
+
+     def send_message
+       conversation = ActiveIntelligence::Conversation.find(params[:id])
+       agent = conversation.agent
+       response = agent.send_message(params[:message])
+       render json: { response: response }
+     end
+   end
+
+5. For streaming support:
+
+   class ConversationsController < ApplicationController
+     include ActionController::Live
+
+     def send_message_streaming
+       conversation = ActiveIntelligence::Conversation.find(params[:id])
+       agent = conversation.agent
+
+       response.headers['Content-Type'] = 'text/event-stream'
+       agent.send_message(params[:message], stream: true) do |chunk|
+         response.stream.write "data: #{chunk}\n\n"
+       end
+     ensure
+       response.stream.close
+     end
+   end
+
+Models (provided by the gem):
+  - ActiveIntelligence::Conversation
+  - ActiveIntelligence::Message
+
+Files created:
+  - config/initializers/active_intelligence.rb
+  - db/migrate/..._create_active_intelligence_conversations.rb
+  - db/migrate/..._create_active_intelligence_messages.rb
+  - app/controllers/concerns/active_intelligence/conversation_manageable.rb
+
+For more information, visit: https://github.com/yourusername/activeintelligence
+
+===============================================================================

@@ -36,13 +36,22 @@ module ActiveIntelligence
     end
 
     # Instance attributes
-    attr_reader :objective, :messages, :options, :tools
+    attr_reader :objective, :messages, :options, :tools, :conversation
 
-    def initialize(objective: nil, options: {}, tools: nil)
+    def initialize(objective: nil, options: {}, tools: nil, conversation: nil)
       @objective = objective
-      @messages = []
       @options = options
       @tools = tools || self.class.tools.map(&:new)
+      @conversation = conversation
+
+      # Initialize messages based on memory strategy
+      if self.class.memory == :active_record
+        raise ConfigurationError, "Conversation required for :active_record memory" unless @conversation
+        @messages = load_messages_from_db
+      else
+        @messages = []
+      end
+
       setup_api_client
     end
 
@@ -63,6 +72,9 @@ module ActiveIntelligence
     private
 
     def add_message(message)
+      if self.class.memory == :active_record
+        persist_message_to_db(message)
+      end
       @messages << message
     end
 
@@ -92,7 +104,7 @@ module ActiveIntelligence
           # Check if the tool returned an error
           is_error = tool_output.is_a?(Hash) && tool_output[:error] == true
 
-          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
+          Messages::ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
         end
 
         # Add all tool results to message history
@@ -109,7 +121,7 @@ module ActiveIntelligence
     end
 
     def send_message_static(content, options = {})
-      message = UserMessage.new(content:)
+      message = Messages::UserMessage.new(content:)
       add_message(message)
 
       response = call_api
@@ -120,7 +132,7 @@ module ActiveIntelligence
 
     # Handle streaming message requests
     def send_message_streaming(content, options = {}, &block)
-      message = UserMessage.new(content:)
+      message = Messages::UserMessage.new(content:)
       add_message(message)
 
       response = call_streaming_api(&block)
@@ -154,7 +166,7 @@ module ActiveIntelligence
           # Check if the tool returned an error
           is_error = tool_output.is_a?(Hash) && tool_output[:error] == true
 
-          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
+          Messages::ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
         end
 
         # Add all tool results to message history and yield them
@@ -210,7 +222,7 @@ module ActiveIntelligence
       )
 
       response = @api_client.call_streaming(formatted_messages, system_prompt, api_options, &block)
-      AgentResponse.new(content: response[:content], tool_calls: response[:tool_calls])
+      Messages::AgentResponse.new(content: response[:content], tool_calls: response[:tool_calls])
     end
 
     def call_api
@@ -235,11 +247,11 @@ module ActiveIntelligence
       while i < @messages.length
         msg = @messages[i]
 
-        if msg.is_a?(ToolResponse)
+        if msg.is_a?(Messages::ToolResponse)
           # Collect consecutive tool responses into a single message
           tool_results = [msg]
           j = i + 1
-          while j < @messages.length && @messages[j].is_a?(ToolResponse)
+          while j < @messages.length && @messages[j].is_a?(Messages::ToolResponse)
             tool_results << @messages[j]
             j += 1
           end
@@ -251,7 +263,7 @@ module ActiveIntelligence
           }
 
           i = j  # Skip past all the tool responses we just processed
-        elsif msg.is_a?(AgentResponse) && !msg.tool_calls.empty?
+        elsif msg.is_a?(Messages::AgentResponse) && !msg.tool_calls.empty?
           # Use structured format for responses with tool calls
           formatted << {
             role: msg.role,
@@ -292,6 +304,49 @@ module ActiveIntelligence
       else
         "Tool not found: #{tool_name}"
       end
+    end
+
+    # ActiveRecord memory strategy methods
+    def load_messages_from_db
+      return [] unless @conversation.respond_to?(:messages)
+
+      @conversation.messages.order(:created_at).map do |msg|
+        # Check if this is a tool response by presence of tool_use_id
+        if msg.tool_use_id.present?
+          result = msg.content.is_a?(String) ? JSON.parse(msg.content, symbolize_names: true) : msg.content
+          Messages::ToolResponse.new(tool_name: msg.tool_name, result: result, tool_use_id: msg.tool_use_id)
+        elsif msg.role == 'assistant'
+          tool_calls = msg.tool_calls.is_a?(String) ? JSON.parse(msg.tool_calls, symbolize_names: true) : (msg.tool_calls || [])
+          Messages::AgentResponse.new(content: msg.content, tool_calls: tool_calls)
+        else
+          Messages::UserMessage.new(content: msg.content)
+        end
+      end
+    rescue StandardError => e
+      raise ConfigurationError, "Failed to load messages from database: #{e.message}"
+    end
+
+    def persist_message_to_db(message)
+      return unless @conversation.respond_to?(:messages)
+
+      attributes = {
+        role: message.role,
+        content: message.content
+      }
+
+      # Add message-type specific attributes
+      case message
+      when Messages::AgentResponse
+        attributes[:tool_calls] = message.tool_calls.to_json if message.tool_calls&.any?
+      when Messages::ToolResponse
+        attributes[:tool_name] = message.tool_name
+        attributes[:tool_use_id] = message.tool_use_id
+        attributes[:content] = message.result.to_json
+      end
+
+      @conversation.messages.create!(attributes)
+    rescue StandardError => e
+      raise ConfigurationError, "Failed to persist message to database: #{e.message}"
     end
   end
 end
