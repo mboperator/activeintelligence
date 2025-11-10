@@ -1,5 +1,5 @@
 module ActiveIntelligence
-  class Conversation < ApplicationRecord
+  class Conversation < ActiveRecord::Base
     self.table_name = 'active_intelligence_conversations'
 
     belongs_to :user, optional: true

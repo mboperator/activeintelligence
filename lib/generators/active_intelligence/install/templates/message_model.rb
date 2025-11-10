@@ -1,5 +1,5 @@
 module ActiveIntelligence
-  class Message < ApplicationRecord
+  class Message < ActiveRecord::Base
     self.table_name = 'active_intelligence_messages'
 
     belongs_to :conversation, class_name: 'ActiveIntelligence::Conversation'

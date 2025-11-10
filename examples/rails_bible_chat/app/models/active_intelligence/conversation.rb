@@ -1,5 +1,5 @@
 module ActiveIntelligence
-  class Conversation < ApplicationRecord
+  class Conversation < ActiveRecord::Base
     self.table_name = 'active_intelligence_conversations'
 
     has_many :messages, class_name: 'ActiveIntelligence::Message', dependent: :destroy
