@@ -1,5 +1,3 @@
-require 'pry'
-
 # lib/active_intelligence/agent.rb
 module ActiveIntelligence
   class Agent
@@ -81,24 +79,45 @@ module ActiveIntelligence
     end
 
     def process_tool_calls
-      last_message = @messages.last
-      if last_message.tool_calls.empty?
-        []
-      else
-        # Handle structured tool calls from API response
-        tool_call = last_message.tool_calls.first
-        tool_name = tool_call[:name]
-        tool_params = tool_call[:parameters]
+      max_iterations = 25  # Prevent infinite loops
+      iterations = 0
+      responses = []
 
-        # Execute the tool
-        tool_output = execute_tool_call(tool_name, tool_params)
-        tool_response = ToolResponse.new(tool_name:, result: tool_output)
-        add_message(tool_response)
+      # Keep processing tool calls until Claude responds with text only
+      while !@messages.last.tool_calls.empty?
+        iterations += 1
+        if iterations > max_iterations
+          raise Error, "Maximum tool call iterations (#{max_iterations}) exceeded. Possible infinite loop."
+        end
+
+        tool_calls = @messages.last.tool_calls
+
+        # Execute ALL tool calls from the response
+        tool_results = tool_calls.map do |tool_call|
+          tool_use_id = tool_call[:id]
+          tool_name = tool_call[:name]
+          tool_params = tool_call[:parameters]
+
+          # Execute the tool
+          tool_output = execute_tool_call(tool_name, tool_params)
+
+          # Check if the tool returned an error
+          is_error = tool_output.is_a?(Hash) && tool_output[:error] == true
+
+          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
+        end
+
+        # Add all tool results to message history
+        tool_results.each { |tr| add_message(tr) }
+        responses += tool_results
+
+        # Get next response from Claude
         response = call_api
         add_message(response)
-
-        [tool_response, response]
+        responses << response
       end
+
+      responses
     end
 
     def send_message_static(content, options = {})
@@ -123,25 +142,42 @@ module ActiveIntelligence
     end
 
     def process_tool_calls_streaming(&block)
-      last_message = @messages.last
+      max_iterations = 25  # Prevent infinite loops
+      iterations = 0
 
-      if last_message.tool_calls.empty?
-        []
-      else
-        # Handle structured tool calls from API response
-        tool_call = last_message.tool_calls.first
-        tool_name = tool_call[:name]
-        tool_params = tool_call[:parameters]
+      # Keep processing tool calls until Claude responds with text only
+      while !@messages.last.tool_calls.empty?
+        iterations += 1
+        if iterations > max_iterations
+          raise Error, "Maximum tool call iterations (#{max_iterations}) exceeded. Possible infinite loop."
+        end
 
-        # Execute the tool
-        tool_output = execute_tool_call(tool_name, tool_params)
-        tool_response = ToolResponse.new(tool_name:, result: tool_output)
-        add_message(tool_response)
+        tool_calls = @messages.last.tool_calls
 
-        yield "\n\n"
-        yield tool_response.content
-        yield "\n\n"
+        # Execute ALL tool calls from the response
+        tool_results = tool_calls.map do |tool_call|
+          tool_use_id = tool_call[:id]
+          tool_name = tool_call[:name]
+          tool_params = tool_call[:parameters]
 
+          # Execute the tool
+          tool_output = execute_tool_call(tool_name, tool_params)
+
+          # Check if the tool returned an error
+          is_error = tool_output.is_a?(Hash) && tool_output[:error] == true
+
+          ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
+        end
+
+        # Add all tool results to message history and yield them
+        tool_results.each do |tool_response|
+          add_message(tool_response)
+          yield "\n\n"
+          yield tool_response.content
+          yield "\n\n"
+        end
+
+        # Get next response from Claude
         response = call_streaming_api(&block)
         add_message(response)
       end
@@ -179,7 +215,13 @@ module ActiveIntelligence
 
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
-      response = @api_client.call_streaming(formatted_messages, system_prompt, options.merge(tools: api_tools), &block)
+      # Merge options with default caching setting
+      api_options = options.merge(
+        tools: api_tools,
+        enable_prompt_caching: options[:enable_prompt_caching] != false
+      )
+
+      response = @api_client.call_streaming(formatted_messages, system_prompt, api_options, &block)
       AgentResponse.new(content: response[:content], tool_calls: response[:tool_calls])
     end
 
@@ -188,14 +230,57 @@ module ActiveIntelligence
       system_prompt = build_system_prompt
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
-      result = @api_client.call(formatted_messages, system_prompt, options.merge(tools: api_tools))
+      # Merge options with default caching setting
+      api_options = options.merge(
+        tools: api_tools,
+        enable_prompt_caching: options[:enable_prompt_caching] != false
+      )
+
+      result = @api_client.call(formatted_messages, system_prompt, api_options)
       AgentResponse.new(content: result[:content], tool_calls: result[:tool_calls])
     end
 
     def format_messages_for_api
-      @messages.map do |msg|
-        { role: msg.role, content: msg.content }
+      formatted = []
+      i = 0
+
+      while i < @messages.length
+        msg = @messages[i]
+
+        if msg.is_a?(ToolResponse)
+          # Collect consecutive tool responses into a single message
+          tool_results = [msg]
+          j = i + 1
+          while j < @messages.length && @messages[j].is_a?(ToolResponse)
+            tool_results << @messages[j]
+            j += 1
+          end
+
+          # Combine all tool results into one message with multiple content blocks
+          formatted << {
+            role: "user",
+            content: tool_results.map(&:to_api_format)
+          }
+
+          i = j  # Skip past all the tool responses we just processed
+        elsif msg.is_a?(AgentResponse) && !msg.tool_calls.empty?
+          # Use structured format for responses with tool calls
+          formatted << {
+            role: msg.role,
+            content: msg.to_api_format
+          }
+          i += 1
+        else
+          # Simple text messages stay the same
+          formatted << {
+            role: msg.role,
+            content: msg.content
+          }
+          i += 1
+        end
       end
+
+      formatted
     end
 
     def format_tools_for_api
