@@ -55,11 +55,9 @@ module ActiveIntelligence
         return details ? "#{error_msg}\nDetails: #{details.inspect}" : error_msg
       end
 
-      # Handle success responses
-      if result.is_a?(Hash) && result[:data] && result[:data].is_a?(Hash)
-        result[:data].values.first
-      elsif result.is_a?(Hash) && result[:data]
-        result[:data]
+      # Handle success responses - send full data as JSON for Claude to parse
+      if result.is_a?(Hash) && result[:data]
+        JSON.pretty_generate(result[:data])
       elsif result.is_a?(Array)
         result.map(&:inspect).join("\n")
       else
