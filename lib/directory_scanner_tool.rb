@@ -33,8 +33,21 @@ class DirectoryScannerTool < ActiveIntelligence::Tool
       return error_response("Directory not found: #{directory}")
     end
 
+    # Test if we can read the directory
+    begin
+      Dir.entries(directory)
+    rescue Errno::EACCES
+      return error_response(
+        "Permission denied: Cannot access directory #{directory}",
+        details: {
+          hint: "On macOS, you may need to grant Terminal/your IDE access to this directory in System Settings > Privacy & Security > Files and Folders"
+        }
+      )
+    end
+
     files = []
     directories = []
+    skipped_dirs = []
     base_depth = directory.count('/')
 
     Find.find(directory) do |path|
@@ -53,24 +66,40 @@ class DirectoryScannerTool < ActiveIntelligence::Tool
         next
       end
 
-      if File.directory?(path) && path != directory
-        directories << relative_path
-      elsif File.file?(path)
-        files << {
-          path: relative_path,
-          size: File.size(path),
-          extension: File.extname(path)
-        }
+      # Handle permission errors gracefully
+      begin
+        if File.directory?(path) && path != directory
+          directories << relative_path
+        elsif File.file?(path)
+          files << {
+            path: relative_path,
+            size: File.size(path),
+            extension: File.extname(path)
+          }
+        end
+      rescue Errno::EACCES
+        # Skip directories/files we can't access
+        skipped_dirs << relative_path
+        Find.prune if File.directory?(path)
       end
     end
 
-    success_response({
+    response_data = {
       directory: directory,
       file_count: files.length,
       directory_count: directories.length,
       files: files.sort_by { |f| f[:path] },
       directories: directories.sort
-    })
+    }
+
+    # Include skipped directories if any
+    if skipped_dirs.any?
+      response_data[:skipped_count] = skipped_dirs.length
+      response_data[:skipped_paths] = skipped_dirs.first(5)  # Only show first 5
+      response_data[:note] = "Some directories were skipped due to permission errors"
+    end
+
+    success_response(response_data)
   rescue StandardError => e
     error_response("Failed to scan directory: #{e.message}", details: { error_class: e.class.to_s })
   end
