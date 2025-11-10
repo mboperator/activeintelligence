@@ -14,8 +14,10 @@ module ActiveIntelligence
 
     # Serialize JSON fields if using databases that don't support JSON natively
     # (PostgreSQL, MySQL 5.7+, and SQLite 3.9+ support JSON natively)
-    serialize :tool_calls, coder: JSON if ActiveRecord::VERSION::MAJOR < 7
-    serialize :metadata, coder: JSON if ActiveRecord::VERSION::MAJOR < 7
+    if ActiveRecord::VERSION::MAJOR < 7
+      serialize :tool_calls, coder: JSON
+      serialize :metadata, coder: JSON
+    end
 
     # Check if this message has tool calls
     def has_tool_calls?

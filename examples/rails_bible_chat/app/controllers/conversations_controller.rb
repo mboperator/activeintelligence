@@ -3,12 +3,12 @@ class ConversationsController < ApplicationController
 
   # Show the main chat interface
   def index
-    @conversations = Conversation.active.order(created_at: :desc).limit(10)
+    @conversations = ActiveIntelligence::Conversation.active.order(created_at: :desc).limit(10)
   end
 
   # Show a specific conversation
   def show
-    @conversation = Conversation.find(params[:id])
+    @conversation = ActiveIntelligence::Conversation.find(params[:id])
     @messages = @conversation.messages.order(:created_at)
 
     respond_to do |format|
@@ -37,7 +37,7 @@ class ConversationsController < ApplicationController
 
   # Create a new conversation
   def create
-    @conversation = Conversation.create!(
+    @conversation = ActiveIntelligence::Conversation.create!(
       agent_class: 'BibleStudyAgent',
       objective: params[:objective] || 'Bible study and exploration'
     )
@@ -56,7 +56,7 @@ class ConversationsController < ApplicationController
 
   # Send a message (non-streaming)
   def send_message
-    @conversation = Conversation.find(params[:id])
+    @conversation = ActiveIntelligence::Conversation.find(params[:id])
     agent = @conversation.agent
 
     message_content = params[:message]
@@ -79,7 +79,7 @@ class ConversationsController < ApplicationController
     response.headers['X-Accel-Buffering'] = 'no'
     response.headers['Cache-Control'] = 'no-cache'
 
-    @conversation = Conversation.find(params[:id])
+    @conversation = ActiveIntelligence::Conversation.find(params[:id])
     agent = @conversation.agent
     message_content = params[:message]
 

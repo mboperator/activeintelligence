@@ -8,7 +8,7 @@ module ActiveIntelligence
 
       source_root File.expand_path('templates', __dir__)
 
-      desc "Creates ActiveIntelligence initializer, models, and migrations"
+      desc "Creates ActiveIntelligence initializer and migrations"
 
       def self.next_migration_number(path)
         Time.now.utc.strftime("%Y%m%d%H%M%S")
@@ -27,11 +27,6 @@ module ActiveIntelligence
 
         migration_template "create_messages_migration.rb.erb",
                           "db/migrate/create_active_intelligence_messages.rb"
-      end
-
-      def create_models
-        template "conversation_model.rb", "app/models/active_intelligence/conversation.rb"
-        template "message_model.rb", "app/models/active_intelligence/message.rb"
       end
 
       def create_concern
