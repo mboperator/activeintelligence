@@ -187,6 +187,8 @@ module ActiveIntelligence
       case self.class.model
       when :claude
         @api_client = ApiClients::ClaudeClient.new(options)
+      when :openai
+        @api_client = ApiClients::OpenAIClient.new(options)
       else
         raise ConfigurationError, "Unsupported model: #{self.class.model}"
       end
