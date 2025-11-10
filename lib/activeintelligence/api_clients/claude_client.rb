@@ -55,15 +55,32 @@ module ActiveIntelligence
       def build_request_params(messages, system_prompt, options)
         params = {
           model: options[:model] || @model,
-          system: system_prompt,
           messages: messages,
           max_tokens: options[:max_tokens] || @max_tokens,
           stream: options[:stream] || false
         }
 
-        # Add tools if provided
+        # Add system prompt with caching if enabled
+        if options[:enable_prompt_caching] != false  # Default to true
+          params[:system] = [
+            {
+              type: "text",
+              text: system_prompt,
+              cache_control: { type: "ephemeral" }
+            }
+          ]
+        else
+          params[:system] = system_prompt
+        end
+
+        # Add tools if provided, with caching on last tool
         if options[:tools] && !options[:tools].empty?
-          params[:tools] = options[:tools]
+          tools = options[:tools].dup
+          # Mark the last tool for caching (most benefit)
+          if options[:enable_prompt_caching] != false && tools.size > 0
+            tools[-1] = tools[-1].merge(cache_control: { type: "ephemeral" })
+          end
+          params[:tools] = tools
         end
 
         params
@@ -96,26 +113,46 @@ module ActiveIntelligence
           result = safe_parse_json(response.body)
 
           if result && result["content"]
+            # Check stop_reason for issues
+            stop_reason = result["stop_reason"]
+            if stop_reason == "max_tokens"
+              Config.logger.warn "Response was truncated due to max_tokens limit. Consider increasing max_tokens."
+            end
+
             # Check if there are tool calls in the response
             tool_calls = result["content"].select { |message| message["type"] == "tool_use" }
             content = result["content"].select { |message| message["type"] == "text" }
+            thinking_blocks = result["content"].select { |message| message["type"] == "thinking" }
+
+            # Log thinking blocks for debugging (optional)
+            if !thinking_blocks.empty? && Config.logger
+              thinking_blocks.each do |tb|
+                Config.logger.debug "Claude thinking: #{tb['thinking']}"
+              end
+            end
+
+            # Safely extract text content (may be empty if only tool calls)
+            text_content = content.first&.dig("text") || ""
 
             if tool_calls && !tool_calls.empty?
               return {
-                content: content[0]["text"],
+                content: text_content,
                 tool_calls: tool_calls.map do |tc|
                   {
+                    id: tc["id"],
                     name: tc["name"],
                     parameters: tc["input"]
                   }
-                end
+                end,
+                stop_reason: stop_reason
               }
             end
 
             # Standard text response
             return {
-              content: content[0]["text"],
-              tool_calls: []
+              content: text_content,
+              tool_calls: [],
+              stop_reason: stop_reason
             }
           end
 
@@ -127,9 +164,10 @@ module ActiveIntelligence
 
       def process_streaming_response(response, &block)
         full_response = ""
-        tool_call_detected = false
-        tool_call_name = nil
-        tool_call_params = {}
+        tool_calls = []
+        stop_reason = nil
+        thinking_content = ""
+        current_tool_input = {}  # Track tool inputs by index
 
         buffer = ""
 
@@ -165,31 +203,67 @@ module ActiveIntelligence
               # Yield the text chunk to the block
               yield text if block_given?
             end
+            # Capture thinking blocks (don't yield to user)
+            if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "thinking_delta"
+              thinking_content << json_data["delta"]["thinking"] if json_data["delta"]["thinking"]
+            end
+            # Capture tool_use block start
             if json_data["type"] == "content_block_start" && json_data["content_block"]["type"] == "tool_use"
-              tool_call_detected = true
               tool_call = json_data["content_block"]
-              tool_call_name = tool_call["name"]
-              tool_call_params = tool_call["input"]
+              index = json_data["index"]
+              tool_calls << {
+                index: index,
+                id: tool_call["id"],
+                name: tool_call["name"],
+                input: ""  # Will be accumulated from delta events
+              }
+              current_tool_input[index] = ""
+            end
+            # Accumulate tool input from delta events
+            if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "input_json_delta"
+              index = json_data["index"]
+              partial_json = json_data["delta"]["partial_json"]
+              current_tool_input[index] ||= ""
+              current_tool_input[index] << partial_json
+            end
+            if json_data["type"] == "message_delta" && json_data["delta"]["stop_reason"]
+              stop_reason = json_data["delta"]["stop_reason"]
             end
           end
         end
 
-        if tool_call_detected
-          {
-            content: full_response,
-            tool_calls: [
-              {
-                name: tool_call_name,
-                parameters: tool_call_params
-              }
-            ]
-          }
-        else
-          {
-            content: full_response,
-            tool_calls: []
-          }
+        # Parse accumulated tool inputs
+        tool_calls.each do |tc|
+          index = tc[:index]
+          if current_tool_input[index] && !current_tool_input[index].empty?
+            tc[:input] = safe_parse_json(current_tool_input[index]) || {}
+          else
+            tc[:input] = {}
+          end
+          tc.delete(:index)  # Remove the index, we don't need it anymore
         end
+
+        # Log thinking content if present
+        if !thinking_content.empty? && Config.logger
+          Config.logger.debug "Claude thinking: #{thinking_content}"
+        end
+
+        # Check stop_reason for issues
+        if stop_reason == "max_tokens"
+          Config.logger.warn "Response was truncated due to max_tokens limit. Consider increasing max_tokens."
+        end
+
+        {
+          content: full_response,
+          tool_calls: tool_calls.map do |tc|
+            {
+              id: tc[:id],
+              name: tc[:name],
+              parameters: tc[:input]
+            }
+          end,
+          stop_reason: stop_reason
+        }
       end
     end
   end

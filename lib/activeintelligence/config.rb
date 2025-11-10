@@ -1,4 +1,6 @@
 # lib/active_intelligence/config.rb
+require 'logger'
+
 module ActiveIntelligence
   module Config
     # Default configurations
@@ -6,7 +8,8 @@ module ActiveIntelligence
       claude: {
         model: "claude-3-opus-20240229",
         api_version: "2023-06-01",
-        max_tokens: 1024
+        max_tokens: 4096,
+        enable_prompt_caching: true
       },
       logger: defined?(Rails) ? Rails.logger : Logger.new(STDOUT)
     }
