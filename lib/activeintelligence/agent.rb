@@ -269,14 +269,15 @@ module ActiveIntelligence
       return [] unless @conversation.respond_to?(:messages)
 
       @conversation.messages.order(:created_at).map do |msg|
-        # Check if this is a tool response by presence of tool_use_id
-        if msg.tool_use_id.present?
+        # STI automatically loads the correct subclass (UserMessage, AssistantMessage, ToolMessage)
+        case msg
+        when ActiveIntelligence::ToolMessage
           result = msg.content.is_a?(String) ? JSON.parse(msg.content, symbolize_names: true) : msg.content
           Messages::ToolResponse.new(tool_name: msg.tool_name, result: result, tool_use_id: msg.tool_use_id)
-        elsif msg.role == 'assistant'
+        when ActiveIntelligence::AssistantMessage
           tool_calls = msg.tool_calls.is_a?(String) ? JSON.parse(msg.tool_calls, symbolize_names: true) : (msg.tool_calls || [])
           Messages::AgentResponse.new(content: msg.content, tool_calls: tool_calls)
-        else
+        when ActiveIntelligence::UserMessage
           Messages::UserMessage.new(content: msg.content)
         end
       end
@@ -287,22 +288,27 @@ module ActiveIntelligence
     def persist_message_to_db(message)
       return unless @conversation.respond_to?(:messages)
 
-      attributes = {
-        role: message.role,
-        content: message.content
-      }
-
-      # Add message-type specific attributes
+      # Use STI classes based on message type
       case message
+      when Messages::UserMessage
+        ActiveIntelligence::UserMessage.create!(
+          conversation: @conversation,
+          content: message.content
+        )
       when Messages::AgentResponse
-        attributes[:tool_calls] = message.tool_calls.to_json if message.tool_calls&.any?
+        ActiveIntelligence::AssistantMessage.create!(
+          conversation: @conversation,
+          content: message.content,
+          tool_calls: message.tool_calls&.any? ? message.tool_calls.to_json : nil
+        )
       when Messages::ToolResponse
-        attributes[:tool_name] = message.tool_name
-        attributes[:tool_use_id] = message.tool_use_id
-        attributes[:content] = message.result.to_json
+        ActiveIntelligence::ToolMessage.create!(
+          conversation: @conversation,
+          content: message.result.to_json,
+          tool_name: message.tool_name,
+          tool_use_id: message.tool_use_id
+        )
       end
-
-      @conversation.messages.create!(attributes)
     rescue StandardError => e
       raise ConfigurationError, "Failed to persist message to database: #{e.message}"
     end

@@ -34,7 +34,7 @@ module ActiveIntelligence
       end
 
       def role
-        "user"
+        "tool"
       end
 
       private
