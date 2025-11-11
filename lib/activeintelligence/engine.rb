@@ -18,6 +18,9 @@ module ActiveIntelligence
     initializer 'active_intelligence.load_models' do
       require_relative 'models/conversation'
       require_relative 'models/message'
+      require_relative 'models/user_message'
+      require_relative 'models/assistant_message'
+      require_relative 'models/tool_message'
     end
   end
 end

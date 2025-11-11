@@ -1,4 +1,4 @@
-class CreateActiveIntelligenceMessages < ActiveRecord::Migration[<%= ActiveRecord::Migration.current_version %>]
+class CreateActiveIntelligenceMessages < ActiveRecord::Migration[7.2]
   def change
     create_table :active_intelligence_messages do |t|
       t.references :conversation, null: false, foreign_key: { to_table: :active_intelligence_conversations }, index: true

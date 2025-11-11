@@ -32,7 +32,7 @@ module ActiveIntelligence
       end
 
       def role
-        "user"
+        "tool"
       end
 
       def tool_response_content
