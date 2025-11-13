@@ -15,7 +15,8 @@ module ActiveIntelligence
       end
 
       def call(messages, system_prompt, options = {})
-        params = build_request_params(messages, system_prompt, options)
+        formatted_messages = format_messages(messages)
+        params = build_request_params(formatted_messages, system_prompt, options)
 
         uri = URI(ANTHROPIC_API_URL)
         http = setup_http_client(uri)
@@ -28,7 +29,8 @@ module ActiveIntelligence
       end
 
       def call_streaming(messages, system_prompt, options = {}, &block)
-        params = build_request_params(messages, system_prompt, options.merge(stream: true))
+        formatted_messages = format_messages(messages)
+        params = build_request_params(formatted_messages, system_prompt, options.merge(stream: true))
 
         uri = URI(ANTHROPIC_API_URL)
         http = setup_http_client(uri)
@@ -51,6 +53,59 @@ module ActiveIntelligence
       end
 
       private
+
+      # Format Message objects into Claude API format
+      def format_messages(messages)
+        messages
+          .chunk_while { |msg1, msg2|
+            # Group consecutive ToolResponses together
+            msg1.is_a?(Messages::ToolResponse) && msg2.is_a?(Messages::ToolResponse)
+          }
+          .flat_map { |chunk| format_message_chunk(chunk) }
+      end
+
+      def format_message_chunk(chunk)
+        first = chunk.first
+
+        case first
+        when Messages::ToolResponse
+          # Group consecutive tool responses into single message
+          [{
+            role: "user",
+            content: chunk.map { |tr|
+              {
+                type: "tool_result",
+                tool_use_id: tr.tool_use_id,
+                content: tr.content,
+                is_error: tr.is_error
+              }
+            }
+          }]
+        when Messages::AgentResponse
+          if first.tool_calls.empty?
+            # Simple text response
+            [{ role: first.role, content: first.content }]
+          else
+            # Response with tool calls - use content blocks
+            content_blocks = []
+            content_blocks << { type: "text", text: first.content } unless first.content.to_s.empty?
+
+            first.tool_calls.each do |tc|
+              content_blocks << {
+                type: "tool_use",
+                id: tc[:id],
+                name: tc[:name],
+                input: tc[:parameters]
+              }
+            end
+
+            [{ role: first.role, content: content_blocks }]
+          end
+        else
+          # Simple message (UserMessage, etc.)
+          [{ role: first.role, content: first.content }]
+        end
+      end
 
       def build_request_params(messages, system_prompt, options)
         params = {

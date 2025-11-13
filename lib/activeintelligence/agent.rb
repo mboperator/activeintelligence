@@ -187,6 +187,8 @@ module ActiveIntelligence
       case self.class.model
       when :claude
         @api_client = ApiClients::ClaudeClient.new(options)
+      when :openai
+        @api_client = ApiClients::OpenAIClient.new(options)
       else
         raise ConfigurationError, "Unsupported model: #{self.class.model}"
       end
@@ -211,8 +213,6 @@ module ActiveIntelligence
 
     def call_streaming_api(&block)
       system_prompt = build_system_prompt
-      formatted_messages = format_messages_for_api
-
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
       # Merge options with default caching setting
@@ -221,12 +221,12 @@ module ActiveIntelligence
         enable_prompt_caching: options[:enable_prompt_caching] != false
       )
 
-      response = @api_client.call_streaming(formatted_messages, system_prompt, api_options, &block)
+      # Pass Message objects directly - client will format them
+      response = @api_client.call_streaming(@messages, system_prompt, api_options, &block)
       Messages::AgentResponse.new(content: response[:content], tool_calls: response[:tool_calls])
     end
 
     def call_api
-      formatted_messages = format_messages_for_api
       system_prompt = build_system_prompt
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
@@ -236,51 +236,9 @@ module ActiveIntelligence
         enable_prompt_caching: options[:enable_prompt_caching] != false
       )
 
-      result = @api_client.call(formatted_messages, system_prompt, api_options)
+      # Pass Message objects directly - client will format them
+      result = @api_client.call(@messages, system_prompt, api_options)
       AgentResponse.new(content: result[:content], tool_calls: result[:tool_calls])
-    end
-
-    def format_messages_for_api
-      formatted = []
-      i = 0
-
-      while i < @messages.length
-        msg = @messages[i]
-
-        if msg.is_a?(Messages::ToolResponse)
-          # Collect consecutive tool responses into a single message
-          tool_results = [msg]
-          j = i + 1
-          while j < @messages.length && @messages[j].is_a?(Messages::ToolResponse)
-            tool_results << @messages[j]
-            j += 1
-          end
-
-          # Combine all tool results into one message with multiple content blocks
-          formatted << {
-            role: "user",
-            content: tool_results.map(&:to_api_format)
-          }
-
-          i = j  # Skip past all the tool responses we just processed
-        elsif msg.is_a?(Messages::AgentResponse) && !msg.tool_calls.empty?
-          # Use structured format for responses with tool calls
-          formatted << {
-            role: msg.role,
-            content: msg.to_api_format
-          }
-          i += 1
-        else
-          # Simple text messages stay the same
-          formatted << {
-            role: msg.role,
-            content: msg.content
-          }
-          i += 1
-        end
-      end
-
-      formatted
     end
 
     def format_tools_for_api
