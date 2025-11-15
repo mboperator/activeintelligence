@@ -11,6 +11,7 @@ module ActiveIntelligence
         subclass.instance_variable_set(:@rescue_handlers, {})
         subclass.instance_variable_set(:@tool_type, :query)
         subclass.instance_variable_set(:@tool_description, nil)
+        subclass.instance_variable_set(:@execution_context, :backend)
         if subclass.name
           subclass.instance_variable_set(:@tool_name, underscore(subclass.name.split('::').last))
         else
@@ -33,18 +34,34 @@ module ActiveIntelligence
         @tool_type = type if type
         @tool_type
       end
-      
+
       def description(desc = nil)
         @tool_description = desc if desc
         @tool_description
       end
-      
+
       def name(custom_name = nil)
         if custom_name
           @tool_name = custom_name
         else
           @tool_name
         end
+      end
+
+      # Execution context DSL - where this tool runs (:backend or :frontend)
+      def execution_context(context = nil)
+        @execution_context = context if context
+        @execution_context
+      end
+
+      # Helper method to check if this tool runs on the frontend
+      def frontend?
+        @execution_context == :frontend
+      end
+
+      # Helper method to check if this tool runs on the backend
+      def backend?
+        @execution_context == :backend
       end
       
       def param(name, type: String, required: false, description: nil, default: nil, enum: nil)

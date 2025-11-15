@@ -7,10 +7,15 @@ class CreateActiveIntelligenceConversations < ActiveRecord::Migration[<%= Active
       t.text :objective
       t.json :metadata, default: {}
 
+      # Agent state tracking
+      t.string :agent_state, default: 'idle'
+      t.string :agent_class_name
+
       t.timestamps
     end
 
     add_index :active_intelligence_conversations, :status
     add_index :active_intelligence_conversations, :agent_class
+    add_index :active_intelligence_conversations, :agent_state
   end
 end

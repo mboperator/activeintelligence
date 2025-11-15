@@ -14,6 +14,9 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
 
   describe '#initialize' do
     it 'requires an API key' do
+      # Stub ENV to return nil for ANTHROPIC_API_KEY
+      allow(ENV).to receive(:[]).with('ANTHROPIC_API_KEY').and_return(nil)
+
       expect {
         described_class.new
       }.to raise_error(ActiveIntelligence::ConfigurationError, /API key is required/)
@@ -174,7 +177,8 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
           ActiveIntelligence::Messages::ToolResponse.new(
             tool_name: "search",
             result: { data: "results" },
-            tool_use_id: "tool_1"
+            tool_use_id: "tool_1",
+            status: ActiveIntelligence::Messages::ToolResponse::STATUSES[:complete]
           )
         ]
 
@@ -201,7 +205,8 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
             tool_name: "search",
             result: { error: true, message: "Failed" },
             tool_use_id: "tool_1",
-            is_error: true
+            is_error: true,
+            status: ActiveIntelligence::Messages::ToolResponse::STATUSES[:error]
           )
         ]
 
@@ -217,17 +222,20 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
           ActiveIntelligence::Messages::ToolResponse.new(
             tool_name: "search",
             result: { data: "result1" },
-            tool_use_id: "tool_1"
+            tool_use_id: "tool_1",
+            status: ActiveIntelligence::Messages::ToolResponse::STATUSES[:complete]
           ),
           ActiveIntelligence::Messages::ToolResponse.new(
             tool_name: "calculate",
             result: { data: "result2" },
-            tool_use_id: "tool_2"
+            tool_use_id: "tool_2",
+            status: ActiveIntelligence::Messages::ToolResponse::STATUSES[:complete]
           ),
           ActiveIntelligence::Messages::ToolResponse.new(
             tool_name: "fetch",
             result: { data: "result3" },
-            tool_use_id: "tool_3"
+            tool_use_id: "tool_3",
+            status: ActiveIntelligence::Messages::ToolResponse::STATUSES[:complete]
           )
         ]
 
@@ -257,7 +265,8 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
           ActiveIntelligence::Messages::ToolResponse.new(
             tool_name: "search",
             result: { data: "found" },
-            tool_use_id: "tool_1"
+            tool_use_id: "tool_1",
+            status: ActiveIntelligence::Messages::ToolResponse::STATUSES[:complete]
           ),
           ActiveIntelligence::Messages::AgentResponse.new(
             content: "Here are the results",
@@ -281,13 +290,15 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
           ActiveIntelligence::Messages::ToolResponse.new(
             tool_name: "search",
             result: { data: "result1" },
-            tool_use_id: "tool_1"
+            tool_use_id: "tool_1",
+            status: ActiveIntelligence::Messages::ToolResponse::STATUSES[:complete]
           ),
           ActiveIntelligence::Messages::UserMessage.new(content: "Hello"),
           ActiveIntelligence::Messages::ToolResponse.new(
             tool_name: "calculate",
             result: { data: "result2" },
-            tool_use_id: "tool_2"
+            tool_use_id: "tool_2",
+            status: ActiveIntelligence::Messages::ToolResponse::STATUSES[:complete]
           )
         ]
 
@@ -540,7 +551,8 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
         chunks << chunk
       end
 
-      expect(chunks).to eq(["Hello", " there"])
+      # Chunks should be SSE-formatted
+      expect(chunks).to eq(["data: Hello\n\n", "data:  there\n\n"])
       expect(result[:content]).to eq("Hello there")
       expect(result[:stop_reason]).to eq("end_turn")
     end
@@ -582,7 +594,8 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
       chunks = []
       result = client.call_streaming(messages, system_prompt) { |chunk| chunks << chunk }
 
-      expect(chunks).to eq(["Let me search"])
+      # Chunks should be SSE-formatted
+      expect(chunks).to eq(["data: Let me search\n\n"])
       expect(result[:content]).to eq("Let me search")
       expect(result[:tool_calls].length).to eq(1)
     end
@@ -602,8 +615,8 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
       chunks = []
       result = client.call_streaming(messages, system_prompt) { |chunk| chunks << chunk }
 
-      # Should not yield thinking content to user
-      expect(chunks).to eq(["Answer"])
+      # Should not yield thinking content to user, chunks should be SSE-formatted
+      expect(chunks).to eq(["data: Answer\n\n"])
       expect(result[:content]).to eq("Answer")
     end
 

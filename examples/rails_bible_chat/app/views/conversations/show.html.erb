@@ -6,7 +6,7 @@
 
 <div class="chat-container">
   <div class="messages" id="messages">
-    <% @messages.each do |message| %>
+    <% @messages.select{ |m| m.content.present? || m.role == 'tool' }.each do |message| %>
       <div class="message <%= message.role %>">
         <div class="message-role"><%= message.role %></div>
         <div class="message-content">
@@ -84,6 +84,202 @@
     return contentDiv;
   }
 
+  // Execute frontend tool
+  async function executeFrontendTool(tool) {
+    if (tool.tool_name === 'show_emoji') {
+      // Display as a tool message (matching DB format)
+      const toolDiv = document.createElement('div');
+      toolDiv.className = 'message tool';
+
+      const roleLabel = document.createElement('div');
+      roleLabel.className = 'message-role';
+      roleLabel.textContent = 'tool';
+
+      const contentDiv = document.createElement('div');
+      contentDiv.className = 'message-content';
+      contentDiv.innerHTML = `<strong>🔧 Tool: ${tool.tool_name}</strong><br>`;
+
+      // Display the emoji in the tool message
+      const emojiSpan = document.createElement('span');
+      const sizeMap = { small: '2em', medium: '4em', large: '6em' };
+      emojiSpan.textContent = tool.parameters.emoji;
+      emojiSpan.style.fontSize = sizeMap[tool.parameters.size || 'medium'];
+      emojiSpan.style.display = 'block';
+      emojiSpan.style.margin = '10px 0';
+
+      contentDiv.appendChild(emojiSpan);
+
+      if (tool.parameters.message) {
+        const messageP = document.createElement('p');
+        messageP.textContent = tool.parameters.message;
+        contentDiv.appendChild(messageP);
+      }
+
+      // Add success indicator
+      const successP = document.createElement('p');
+      successP.textContent = `{"success":true,"emoji":"${tool.parameters.emoji}","displayed":true}`;
+      successP.style.fontSize = '12px';
+      successP.style.color = '#666';
+      successP.style.marginTop = '10px';
+      contentDiv.appendChild(successP);
+
+      toolDiv.appendChild(roleLabel);
+      toolDiv.appendChild(contentDiv);
+      messagesContainer.appendChild(toolDiv);
+      scrollToBottom();
+
+      // Return success result
+      return {
+        tool_use_id: tool.tool_use_id,
+        result: {
+          success: true,
+          emoji: tool.parameters.emoji,
+          displayed: true
+        }
+      };
+    }
+
+    // Unknown tool - return error
+    return {
+      tool_use_id: tool.tool_use_id,
+      result: {
+        error: true,
+        message: `Unknown frontend tool: ${tool.tool_name}`
+      }
+    };
+  }
+
+  // Continue conversation with tool results
+  async function continueWithToolResults(toolResults, assistantContent) {
+    try {
+      const response = await fetch(`/conversations/${conversationId}/send_message_streaming`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream'
+        },
+        body: JSON.stringify({ tool_results: toolResults })
+      });
+
+      // Create new assistant message container if not provided
+      if (!assistantContent) {
+        assistantContent = addMessage('assistant', '');
+      }
+
+      await processStreamingResponse(response, assistantContent);
+    } catch (error) {
+      console.error('Error continuing with tool results:', error);
+      addMessage('assistant', 'Sorry, there was an error continuing the conversation.');
+    }
+  }
+
+  // Process streaming response (extracted for reuse)
+  async function processStreamingResponse(response, assistantContent) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEvent = null;
+    let hasTextContent = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+
+      // Keep last line if incomplete (doesn't end with \n)
+      if (!buffer.endsWith('\n')) {
+        buffer = lines.pop();
+      } else {
+        buffer = '';
+      }
+
+      for (const line of lines) {
+        // console.log(line); // Uncomment for debugging
+        if (line.startsWith('event: ')) {
+          currentEvent = line.substring(7);
+          // console.log('Event:', currentEvent); // Uncomment for debugging
+        } else if (line.startsWith('data: ')) {
+          const data = line.substring(6);
+
+          if (data === '[DONE]') {
+            continue;
+          }
+
+          if (currentEvent === 'frontend_tool_request') {
+            // Parse frontend tool request
+            try {
+              const toolRequest = JSON.parse(data);
+              console.log('Frontend tool request:', toolRequest);
+
+              // Execute all pending frontend tools automatically
+              const toolResults = [];
+              for (const tool of toolRequest.pending_tools) {
+                const result = await executeFrontendTool(tool);
+                toolResults.push(result);
+              }
+
+              // Remove empty assistant message if no text was added
+              if (!hasTextContent && assistantContent && assistantContent.parentElement) {
+                assistantContent.parentElement.remove();
+              }
+
+              // Continue conversation with results (creates new assistant message if needed)
+              await continueWithToolResults(toolResults, null);
+            } catch (err) {
+              console.error('Error processing frontend tool request:', err);
+            }
+            currentEvent = null;
+            return; // Exit since we're starting a new stream
+          } else if (currentEvent === 'tool_result') {
+            // Display backend tool result as a separate TOOL message
+            try {
+              const toolResult = JSON.parse(data);
+              console.log('Backend tool result:', toolResult);
+
+              const toolDiv = document.createElement('div');
+              toolDiv.className = 'message tool';
+
+              const roleLabel = document.createElement('div');
+              roleLabel.className = 'message-role';
+              roleLabel.textContent = 'tool';
+
+              const contentDiv = document.createElement('div');
+              contentDiv.className = 'message-content';
+              contentDiv.innerHTML = `<strong>🔧 Tool: ${toolResult.tool_name}</strong><br>${toolResult.content}`;
+
+              toolDiv.appendChild(roleLabel);
+              toolDiv.appendChild(contentDiv);
+              messagesContainer.appendChild(toolDiv);
+              scrollToBottom();
+            } catch (err) {
+              console.error('Error processing tool result:', err);
+            }
+            currentEvent = null;
+          } else {
+            // Regular text data - append to assistant message
+            if (data.trim()) {
+              hasTextContent = true;
+              if (assistantContent) {
+                assistantContent.textContent += data;
+              }
+              scrollToBottom();
+            }
+          }
+        } else if (line === '') {
+          // Empty line resets event type
+          currentEvent = null;
+        }
+      }
+    }
+
+    // Remove empty assistant message if no text was added
+    if (!hasTextContent && assistantContent && assistantContent.parentElement) {
+      assistantContent.parentElement.remove();
+    }
+  }
+
   // Handle form submission with streaming
   messageForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -111,31 +307,7 @@
         }
       });
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
-        buffer = lines.pop(); // Keep incomplete line in buffer
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.substring(6);
-            if (data === '[DONE]') {
-              continue;
-            }
-
-            // Append chunk to assistant message
-            assistantContent.textContent += data;
-            scrollToBottom();
-          }
-        }
-      }
+      await processStreamingResponse(response, assistantContent);
     } catch (error) {
       console.error('Error:', error);
       addMessage('assistant', 'Sorry, there was an error processing your message.');

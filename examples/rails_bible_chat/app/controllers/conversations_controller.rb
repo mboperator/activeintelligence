@@ -59,13 +59,29 @@ class ConversationsController < ApplicationController
     @conversation = ActiveIntelligence::Conversation.find(params[:id])
     agent = @conversation.agent
 
-    message_content = params[:message]
-    response = agent.send_message(message_content)
+    # Check if we're resuming from frontend tool execution
+    if params[:tool_results].present?
+      response = agent.continue_with_tool_results(params[:tool_results])
+    else
+      message_content = params[:message]
+      response = agent.send_message(message_content)
+    end
 
-    render json: {
-      response: response,
-      message_count: @conversation.message_count
-    }
+    # Handle different response types
+    if response.is_a?(Hash) && response[:status] == :awaiting_tool_results
+      render json: {
+        type: 'frontend_tool_request',
+        pending_tools: response[:pending_tools],
+        conversation_id: response[:conversation_id],
+        message_count: @conversation.message_count
+      }
+    else
+      render json: {
+        type: 'completed',
+        response: response,
+        message_count: @conversation.message_count
+      }
+    end
   rescue StandardError => e
     Rails.logger.error "Error sending message: #{e.message}\n#{e.backtrace.join("\n")}"
     render json: {
@@ -81,14 +97,40 @@ class ConversationsController < ApplicationController
 
     @conversation = ActiveIntelligence::Conversation.find(params[:id])
     agent = @conversation.agent
-    message_content = params[:message]
 
     begin
-      agent.send_message(message_content, stream: true) do |chunk|
-        response.stream.write "data: #{chunk}\n\n"
+      # Parse JSON body if present (for tool results)
+      request_body = request.body.read
+      body_params = request_body.present? ? JSON.parse(request_body) : {}
+
+      # Check if we're resuming from frontend tool execution
+      tool_results = body_params['tool_results'] || params[:tool_results]
+
+      if tool_results.present?
+        # Convert string keys to symbols for tool results
+        tool_results = tool_results.map do |tr|
+          {
+            tool_use_id: tr['tool_use_id'] || tr[:tool_use_id],
+            result: tr['result'] || tr[:result],
+            message_id: tr['message_id'] || tr[:message_id]
+          }.compact
+        end
+
+        agent.continue_with_tool_results(tool_results, stream: true) do |chunk|
+          response.stream.write chunk
+        end
+      else
+        message_content = params[:message]
+        agent.send_message(message_content, stream: true) do |chunk|
+          response.stream.write chunk
+        end
       end
 
-      response.stream.write "data: [DONE]\n\n"
+      # Note: [DONE] is sent by process_tool_calls_streaming if frontend tool is needed
+      # Otherwise, we send it here
+      unless agent.paused_for_frontend?
+        response.stream.write "data: [DONE]\n\n"
+      end
     rescue IOError
       # Client disconnected
       Rails.logger.info "Client disconnected from stream"
