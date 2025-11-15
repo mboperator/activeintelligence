@@ -109,12 +109,19 @@ end
 
 ### 6. Updated Controller (`examples/rails_bible_chat/app/controllers/conversations_controller.rb`)
 
-**Changes to `send_message` method:**
+**Changes to `send_message` method (static mode):**
 - Checks for `tool_results` param (resuming)
 - Calls `continue_with_tool_results` when resuming
 - Returns different JSON based on response type:
   - `type: 'frontend_tool_request'` when paused
   - `type: 'completed'` when done
+
+**Changes to `send_message_streaming` method (streaming mode):**
+- Checks for `tool_results` param (resuming)
+- Calls `continue_with_tool_results(stream: true)` when resuming
+- Emits SSE event `frontend_tool_request` when frontend tool is needed
+- Closes stream after emitting event
+- Frontend resumes by making new POST with tool results
 
 ### 7. Documentation & Examples
 
@@ -125,10 +132,10 @@ end
 
 ## How It Works
 
-### Execution Flow
+### Execution Flow (Static Mode)
 
 ```
-1. User sends message
+1. User sends message via POST
    ↓
 2. Agent sends message to Claude
    ↓
@@ -137,11 +144,11 @@ end
 4. Agent partitions tools into frontend/backend
    ↓
 5a. Backend tools → Execute immediately → Continue loop
-5b. Frontend tools → Pause & return to React
+5b. Frontend tools → Pause & return JSON response
    ↓
 6. React executes frontend tool
    ↓
-7. React sends result back to Rails
+7. React sends result back via POST with tool_results
    ↓
 8. Agent calls continue_with_tool_results()
    ↓
@@ -150,6 +157,36 @@ end
 10. Agent calls Claude with tool result
     ↓
 11. Back to step 3 (loop until complete)
+```
+
+### Execution Flow (Streaming Mode)
+
+```
+1. User sends message via GET/POST (SSE stream opens)
+   ↓
+2. Agent sends message to Claude
+   ↓
+3. Claude responds with tool calls (streaming)
+   ↓
+4. Agent partitions tools into frontend/backend
+   ↓
+5. Backend tools → Execute immediately → Stream results to React
+   ↓
+6. Frontend tools detected → Emit SSE event 'frontend_tool_request'
+   ↓
+7. Stream closes with [DONE]
+   ↓
+8. React executes frontend tool
+   ↓
+9. React sends result back via POST with tool_results (new stream opens)
+   ↓
+10. Agent calls continue_with_tool_results(stream: true)
+    ↓
+11. Tool result added to conversation and streamed
+    ↓
+12. Agent calls Claude with tool result (streaming)
+    ↓
+13. Back to step 3 (loop until complete)
 ```
 
 ### Multi-User Support

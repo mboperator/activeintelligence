@@ -97,14 +97,25 @@ class ConversationsController < ApplicationController
 
     @conversation = ActiveIntelligence::Conversation.find(params[:id])
     agent = @conversation.agent
-    message_content = params[:message]
 
     begin
-      agent.send_message(message_content, stream: true) do |chunk|
-        response.stream.write "data: #{chunk}\n\n"
+      # Check if we're resuming from frontend tool execution
+      if params[:tool_results].present?
+        agent.continue_with_tool_results(params[:tool_results], stream: true) do |chunk|
+          response.stream.write chunk
+        end
+      else
+        message_content = params[:message]
+        agent.send_message(message_content, stream: true) do |chunk|
+          response.stream.write chunk
+        end
       end
 
-      response.stream.write "data: [DONE]\n\n"
+      # Note: [DONE] is sent by process_tool_calls_streaming if frontend tool is needed
+      # Otherwise, we send it here
+      unless agent.paused_for_frontend?
+        response.stream.write "data: [DONE]\n\n"
+      end
     rescue IOError
       # Client disconnected
       Rails.logger.info "Client disconnected from stream"

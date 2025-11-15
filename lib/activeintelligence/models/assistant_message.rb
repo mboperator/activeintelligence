@@ -1,7 +1,5 @@
 module ActiveIntelligence
   class AssistantMessage < Message
-    validates :content, presence: true
-
     # Ensure tool-specific fields are not set
     validate :no_tool_response_fields
 

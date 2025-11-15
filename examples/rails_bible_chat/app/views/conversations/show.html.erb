@@ -6,7 +6,7 @@
 
 <div class="chat-container">
   <div class="messages" id="messages">
-    <% @messages.each do |message| %>
+    <% @messages.select{ |m| m.content.present? || m.role == 'tool' }.each do |message| %>
       <div class="message <%= message.role %>">
         <div class="message-role"><%= message.role %></div>
         <div class="message-content">

@@ -88,7 +88,7 @@ module ActiveIntelligence
     end
 
     # Resume execution after frontend tool completes
-    def continue_with_tool_results(tool_results)
+    def continue_with_tool_results(tool_results, stream: false, &block)
       unless @state == STATES[:awaiting_frontend_tool]
         raise Error, "Cannot continue: agent is in state '#{@state}', expected '#{STATES[:awaiting_frontend_tool]}'"
       end
@@ -109,16 +109,32 @@ module ActiveIntelligence
 
       # Resume processing (will call Claude with tool results)
       update_state(STATES[:idle])
-      result = process_tool_calls
 
-      # Check if we paused again
-      if paused_for_frontend?
-        return build_frontend_response
+      if stream && block_given?
+        # Stream the tool results that were just added
+        @messages.select { |m| m.is_a?(Messages::ToolResponse) }
+                 .last(tool_results.size)
+                 .each do |tool_response|
+          yield "\n\n"
+          yield tool_response.content
+          yield "\n\n"
+        end
+
+        # Continue processing with streaming
+        process_tool_calls_streaming(&block)
+      else
+        # Static mode
+        result = process_tool_calls
+
+        # Check if we paused again
+        if paused_for_frontend?
+          return build_frontend_response
+        end
+
+        # Completed
+        update_state(STATES[:completed])
+        result.flatten.map(&:content).join("\n\n")
       end
-
-      # Completed
-      update_state(STATES[:completed])
-      result.flatten.map(&:content).join("\n\n")
     end
 
     private
@@ -216,8 +232,11 @@ module ActiveIntelligence
 
         tool_calls = @messages.last.tool_calls
 
-        # Execute ALL tool calls from the response
-        tool_results = tool_calls.map do |tool_call|
+        # Separate frontend and backend tools
+        frontend_tools, backend_tools = partition_tool_calls(tool_calls)
+
+        # Execute backend tools first and stream their results
+        backend_tool_results = backend_tools.map do |tool_call|
           tool_use_id = tool_call[:id]
           tool_name = tool_call[:name]
           tool_params = tool_call[:parameters]
@@ -231,15 +250,33 @@ module ActiveIntelligence
           Messages::ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
         end
 
-        # Add all tool results to message history and yield them
-        tool_results.each do |tool_response|
+        # Add backend tool results to message history and yield them
+        backend_tool_results.each do |tool_response|
           add_message(tool_response)
           yield "\n\n"
           yield tool_response.content
           yield "\n\n"
         end
 
-        # Get next response from Claude
+        # If we have frontend tools, pause execution and emit special event
+        if frontend_tools.any?
+          store_pending_frontend_tools(frontend_tools)
+          update_state(STATES[:awaiting_frontend_tool])
+
+          # Emit SSE event for frontend tool request
+          yield "event: frontend_tool_request\n"
+          yield "data: #{JSON.generate({
+            status: 'awaiting_frontend_tool',
+            tools: frontend_tools,
+            conversation_id: @conversation&.id
+          })}\n\n"
+
+          # Close the stream gracefully
+          yield "data: [DONE]\n\n"
+          return  # Pause here - frontend will resume with new request
+        end
+
+        # Get next response from Claude (only if no frontend tools)
         response = call_streaming_api(&block)
         add_message(response)
       end

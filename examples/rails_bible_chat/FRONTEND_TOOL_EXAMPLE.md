@@ -194,6 +194,201 @@ function ChatInterface({ conversationId }) {
 export default ChatInterface;
 ```
 
+## Streaming Implementation (SSE)
+
+For streaming responses, use Server-Sent Events (SSE) and listen for the special `frontend_tool_request` event:
+
+```javascript
+function ChatInterfaceStreaming({ conversationId }) {
+  const [messages, setMessages] = useState([]);
+  const [currentMessage, setCurrentMessage] = useState('');
+
+  const sendMessageStreaming = async (messageText) => {
+    const eventSource = new EventSource(
+      `/conversations/${conversationId}/send_message_streaming?${new URLSearchParams({
+        message: messageText
+      })}`
+    );
+
+    let buffer = '';
+
+    eventSource.onmessage = (event) => {
+      if (event.data === '[DONE]') {
+        // Stream complete
+        setMessages([...messages, { role: 'assistant', content: buffer }]);
+        setCurrentMessage('');
+        eventSource.close();
+        return;
+      }
+
+      // Accumulate chunks
+      buffer += event.data;
+      setCurrentMessage(buffer);
+    };
+
+    eventSource.addEventListener('frontend_tool_request', async (event) => {
+      const data = JSON.parse(event.data);
+      console.log('Frontend tool request received:', data);
+
+      // Close the current stream
+      eventSource.close();
+
+      // Save any buffered content
+      if (buffer) {
+        setMessages(prev => [...prev, { role: 'assistant', content: buffer }]);
+        buffer = '';
+      }
+
+      // Execute frontend tools
+      const toolResults = await executeFrontendTools(data.tools);
+
+      // Resume the conversation with a new stream
+      await continueStreamingWithToolResults(conversationId, toolResults);
+    });
+
+    eventSource.onerror = (error) => {
+      console.error('SSE Error:', error);
+      eventSource.close();
+    };
+  };
+
+  const continueStreamingWithToolResults = async (conversationId, toolResults) => {
+    const eventSource = new EventSource(
+      `/conversations/${conversationId}/send_message_streaming`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool_results: toolResults })
+      }
+    );
+
+    // Note: EventSource doesn't support POST natively
+    // You'll need to use fetch-event-source or similar library
+    // Or make a custom SSE implementation
+
+    // Alternative: Use fetch with streaming response
+    const response = await fetch(
+      `/conversations/${conversationId}/send_message_streaming`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool_results: toolResults })
+      }
+    );
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('event: frontend_tool_request')) {
+          // Another frontend tool request!
+          const nextLine = lines[lines.indexOf(line) + 1];
+          if (nextLine?.startsWith('data: ')) {
+            const data = JSON.parse(nextLine.substring(6));
+            const toolResults = await executeFrontendTools(data.tools);
+            await continueStreamingWithToolResults(conversationId, toolResults);
+            return;
+          }
+        } else if (line.startsWith('data: ')) {
+          const data = line.substring(6);
+          if (data === '[DONE]') {
+            setMessages(prev => [...prev, { role: 'assistant', content: buffer }]);
+            return;
+          }
+          buffer += data;
+          setCurrentMessage(buffer);
+        }
+      }
+    }
+  };
+
+  const executeFrontendTools = async (tools) => {
+    const toolResults = [];
+
+    for (const toolCall of tools) {
+      let result;
+
+      switch (toolCall.name) {
+        case 'show_emoji':
+          result = await executeShowEmoji(toolCall.parameters);
+          break;
+        default:
+          result = { error: true, message: `Unknown tool: ${toolCall.name}` };
+      }
+
+      toolResults.push({
+        tool_use_id: toolCall.id,
+        tool_name: toolCall.name,
+        result: result,
+        is_error: result.error || false
+      });
+    }
+
+    return toolResults;
+  };
+
+  const executeShowEmoji = async (params) => {
+    // Same implementation as before
+    const emojiElement = document.createElement('div');
+    emojiElement.className = `emoji-display emoji-${params.size}`;
+    emojiElement.innerHTML = `
+      <span class="emoji">${params.emoji}</span>
+      ${params.message ? `<p>${params.message}</p>` : ''}
+    `;
+
+    const chatContainer = document.getElementById('chat-messages');
+    chatContainer.appendChild(emojiElement);
+
+    return {
+      success: true,
+      data: {
+        emoji: params.emoji,
+        displayed: true,
+        timestamp: new Date().toISOString()
+      }
+    };
+  };
+
+  return (
+    <div>
+      <div id="chat-messages">
+        {messages.map((msg, i) => (
+          <div key={i} className={`message ${msg.role}`}>
+            {msg.content}
+          </div>
+        ))}
+        {currentMessage && (
+          <div className="message assistant streaming">
+            {currentMessage}
+          </div>
+        )}
+      </div>
+
+      <input
+        type="text"
+        onKeyPress={(e) => {
+          if (e.key === 'Enter') {
+            sendMessageStreaming(e.target.value);
+            e.target.value = '';
+          }
+        }}
+        placeholder="Type your message..."
+      />
+    </div>
+  );
+}
+
+export default ChatInterfaceStreaming;
+```
+
 ## CSS for Emoji Display
 
 ```css
