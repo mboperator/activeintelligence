@@ -84,6 +84,145 @@
     return contentDiv;
   }
 
+  // Display emoji in the UI
+  function displayEmoji(emoji, size = 'medium', message = null) {
+    const emojiDiv = document.createElement('div');
+    emojiDiv.className = 'message assistant';
+    emojiDiv.style.textAlign = 'center';
+    emojiDiv.style.padding = '20px';
+
+    const sizeMap = { small: '2em', medium: '4em', large: '6em' };
+    const emojiSpan = document.createElement('span');
+    emojiSpan.textContent = emoji;
+    emojiSpan.style.fontSize = sizeMap[size] || sizeMap.medium;
+
+    emojiDiv.appendChild(emojiSpan);
+
+    if (message) {
+      const messageP = document.createElement('p');
+      messageP.textContent = message;
+      messageP.style.marginTop = '10px';
+      messageP.style.fontSize = '14px';
+      emojiDiv.appendChild(messageP);
+    }
+
+    messagesContainer.appendChild(emojiDiv);
+    scrollToBottom();
+  }
+
+  // Execute frontend tool
+  async function executeFrontendTool(tool) {
+    if (tool.tool_name === 'show_emoji') {
+      // Display the emoji
+      displayEmoji(
+        tool.parameters.emoji,
+        tool.parameters.size || 'medium',
+        tool.parameters.message
+      );
+
+      // Return success result
+      return {
+        tool_use_id: tool.tool_use_id,
+        result: {
+          success: true,
+          emoji: tool.parameters.emoji,
+          displayed: true
+        }
+      };
+    }
+
+    // Unknown tool - return error
+    return {
+      tool_use_id: tool.tool_use_id,
+      result: {
+        error: true,
+        message: `Unknown frontend tool: ${tool.tool_name}`
+      }
+    };
+  }
+
+  // Continue conversation with tool results
+  async function continueWithToolResults(toolResults, assistantContent) {
+    try {
+      const response = await fetch(`/conversations/${conversationId}/send_message_streaming`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream'
+        },
+        body: JSON.stringify({ tool_results: toolResults })
+      });
+
+      await processStreamingResponse(response, assistantContent);
+    } catch (error) {
+      console.error('Error continuing with tool results:', error);
+      addMessage('assistant', 'Sorry, there was an error continuing the conversation.');
+    }
+  }
+
+  // Process streaming response (extracted for reuse)
+  async function processStreamingResponse(response, assistantContent) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEvent = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+
+      // Keep last line if incomplete (doesn't end with \n)
+      if (!buffer.endsWith('\n')) {
+        buffer = lines.pop();
+      } else {
+        buffer = '';
+      }
+
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.substring(7);
+        } else if (line.startsWith('data: ')) {
+          const data = line.substring(6);
+
+          if (data === '[DONE]') {
+            continue;
+          }
+
+          if (currentEvent === 'frontend_tool_request') {
+            // Parse frontend tool request
+            try {
+              const toolRequest = JSON.parse(data);
+              console.log('Frontend tool request:', toolRequest);
+
+              // Execute all pending frontend tools
+              const toolResults = [];
+              for (const tool of toolRequest.pending_tools) {
+                const result = await executeFrontendTool(tool);
+                toolResults.push(result);
+              }
+
+              // Continue conversation with results
+              await continueWithToolResults(toolResults, assistantContent);
+            } catch (err) {
+              console.error('Error processing frontend tool request:', err);
+            }
+            currentEvent = null;
+          } else {
+            // Regular text data
+            assistantContent.textContent += data;
+            scrollToBottom();
+          }
+        } else if (line === '') {
+          // Empty line resets event type
+          currentEvent = null;
+        }
+      }
+    }
+  }
+
   // Handle form submission with streaming
   messageForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -111,31 +250,7 @@
         }
       });
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
-        buffer = lines.pop(); // Keep incomplete line in buffer
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.substring(6);
-            if (data === '[DONE]') {
-              continue;
-            }
-
-            // Append chunk to assistant message
-            assistantContent.textContent += data;
-            scrollToBottom();
-          }
-        }
-      }
+      await processStreamingResponse(response, assistantContent);
     } catch (error) {
       console.error('Error:', error);
       addMessage('assistant', 'Sorry, there was an error processing your message.');

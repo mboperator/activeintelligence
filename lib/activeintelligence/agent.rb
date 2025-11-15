@@ -137,13 +137,13 @@ module ActiveIntelligence
       update_state(STATES[:idle])
 
       if stream && block_given?
-        # Stream the completed tool results
+        # Stream the completed tool results (SSE-formatted)
         @messages.select { |m| m.is_a?(Messages::ToolResponse) && m.complete? }
                  .last(tool_results.size)
                  .each do |tool_response|
-          yield "\n\n"
-          yield tool_response.content
-          yield "\n\n"
+          yield "data: \n\n"
+          yield "data: #{tool_response.content}\n\n"
+          yield "data: \n\n"
         end
 
         # Call Claude with completed tool results (streaming)
@@ -345,10 +345,11 @@ module ActiveIntelligence
             db_message&.complete!(result)
           end
 
-          # Stream the result to the user
-          yield "\n\n"
-          yield tool_response.content
-          yield "\n\n"
+          # Stream the result to the user (SSE-formatted)
+          # Add newlines before and after for spacing
+          yield "data: \n\n"
+          yield "data: #{tool_response.content}\n\n"
+          yield "data: \n\n"
         end
 
         # Check if we have pending frontend tools

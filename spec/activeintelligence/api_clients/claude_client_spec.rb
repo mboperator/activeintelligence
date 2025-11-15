@@ -551,7 +551,8 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
         chunks << chunk
       end
 
-      expect(chunks).to eq(["Hello", " there"])
+      # Chunks should be SSE-formatted
+      expect(chunks).to eq(["data: Hello\n\n", "data:  there\n\n"])
       expect(result[:content]).to eq("Hello there")
       expect(result[:stop_reason]).to eq("end_turn")
     end
@@ -593,7 +594,8 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
       chunks = []
       result = client.call_streaming(messages, system_prompt) { |chunk| chunks << chunk }
 
-      expect(chunks).to eq(["Let me search"])
+      # Chunks should be SSE-formatted
+      expect(chunks).to eq(["data: Let me search\n\n"])
       expect(result[:content]).to eq("Let me search")
       expect(result[:tool_calls].length).to eq(1)
     end
@@ -613,8 +615,8 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
       chunks = []
       result = client.call_streaming(messages, system_prompt) { |chunk| chunks << chunk }
 
-      # Should not yield thinking content to user
-      expect(chunks).to eq(["Answer"])
+      # Should not yield thinking content to user, chunks should be SSE-formatted
+      expect(chunks).to eq(["data: Answer\n\n"])
       expect(result[:content]).to eq("Answer")
     end
 

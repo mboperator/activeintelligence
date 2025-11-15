@@ -99,9 +99,24 @@ class ConversationsController < ApplicationController
     agent = @conversation.agent
 
     begin
+      # Parse JSON body if present (for tool results)
+      request_body = request.body.read
+      body_params = request_body.present? ? JSON.parse(request_body) : {}
+
       # Check if we're resuming from frontend tool execution
-      if params[:tool_results].present?
-        agent.continue_with_tool_results(params[:tool_results], stream: true) do |chunk|
+      tool_results = body_params['tool_results'] || params[:tool_results]
+
+      if tool_results.present?
+        # Convert string keys to symbols for tool results
+        tool_results = tool_results.map do |tr|
+          {
+            tool_use_id: tr['tool_use_id'] || tr[:tool_use_id],
+            result: tr['result'] || tr[:result],
+            message_id: tr['message_id'] || tr[:message_id]
+          }.compact
+        end
+
+        agent.continue_with_tool_results(tool_results, stream: true) do |chunk|
           response.stream.write chunk
         end
       else

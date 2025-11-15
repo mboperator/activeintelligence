@@ -230,7 +230,6 @@ module ActiveIntelligence
         buffer = ""
 
         response.read_body do |chunk|
-          puts chunk
           buffer += chunk
 
           # Process complete SSE events from the buffer
@@ -259,8 +258,8 @@ module ActiveIntelligence
               # Append to full response
               full_response << text
 
-              # Yield the text chunk to the block
-              yield text if block_given?
+              # Yield SSE-formatted chunk to the block
+              yield "data: #{text}\n\n" if block_given?
             end
             # Capture thinking blocks (don't yield to user)
             if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "thinking_delta"
