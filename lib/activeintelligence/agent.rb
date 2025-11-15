@@ -137,13 +137,16 @@ module ActiveIntelligence
       update_state(STATES[:idle])
 
       if stream && block_given?
-        # Stream the completed tool results (SSE-formatted)
+        # Stream the completed tool results as separate events
         @messages.select { |m| m.is_a?(Messages::ToolResponse) && m.complete? }
                  .last(tool_results.size)
                  .each do |tool_response|
-          yield "data: \n\n"
-          yield "data: #{tool_response.content}\n\n"
-          yield "data: \n\n"
+          yield "event: tool_result\n"
+          yield "data: #{JSON.generate({
+            tool_name: tool_response.tool_name,
+            tool_use_id: tool_response.tool_use_id,
+            content: tool_response.content
+          })}\n\n"
         end
 
         # Call Claude with completed tool results (streaming)
@@ -345,11 +348,13 @@ module ActiveIntelligence
             db_message&.complete!(result)
           end
 
-          # Stream the result to the user (SSE-formatted)
-          # Add newlines before and after for spacing
-          yield "data: \n\n"
-          yield "data: #{tool_response.content}\n\n"
-          yield "data: \n\n"
+          # Stream the tool result as a separate event
+          yield "event: tool_result\n"
+          yield "data: #{JSON.generate({
+            tool_name: tool_response.tool_name,
+            tool_use_id: tool_response.tool_use_id,
+            content: tool_response.content
+          })}\n\n"
         end
 
         # Check if we have pending frontend tools

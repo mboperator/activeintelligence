@@ -84,41 +84,49 @@
     return contentDiv;
   }
 
-  // Display emoji in the UI
-  function displayEmoji(emoji, size = 'medium', message = null) {
-    const emojiDiv = document.createElement('div');
-    emojiDiv.className = 'message assistant';
-    emojiDiv.style.textAlign = 'center';
-    emojiDiv.style.padding = '20px';
-
-    const sizeMap = { small: '2em', medium: '4em', large: '6em' };
-    const emojiSpan = document.createElement('span');
-    emojiSpan.textContent = emoji;
-    emojiSpan.style.fontSize = sizeMap[size] || sizeMap.medium;
-
-    emojiDiv.appendChild(emojiSpan);
-
-    if (message) {
-      const messageP = document.createElement('p');
-      messageP.textContent = message;
-      messageP.style.marginTop = '10px';
-      messageP.style.fontSize = '14px';
-      emojiDiv.appendChild(messageP);
-    }
-
-    messagesContainer.appendChild(emojiDiv);
-    scrollToBottom();
-  }
-
   // Execute frontend tool
   async function executeFrontendTool(tool) {
     if (tool.tool_name === 'show_emoji') {
-      // Display the emoji
-      displayEmoji(
-        tool.parameters.emoji,
-        tool.parameters.size || 'medium',
-        tool.parameters.message
-      );
+      // Display as a tool message (matching DB format)
+      const toolDiv = document.createElement('div');
+      toolDiv.className = 'message tool';
+
+      const roleLabel = document.createElement('div');
+      roleLabel.className = 'message-role';
+      roleLabel.textContent = 'tool';
+
+      const contentDiv = document.createElement('div');
+      contentDiv.className = 'message-content';
+      contentDiv.innerHTML = `<strong>🔧 Tool: ${tool.tool_name}</strong><br>`;
+
+      // Display the emoji in the tool message
+      const emojiSpan = document.createElement('span');
+      const sizeMap = { small: '2em', medium: '4em', large: '6em' };
+      emojiSpan.textContent = tool.parameters.emoji;
+      emojiSpan.style.fontSize = sizeMap[tool.parameters.size || 'medium'];
+      emojiSpan.style.display = 'block';
+      emojiSpan.style.margin = '10px 0';
+
+      contentDiv.appendChild(emojiSpan);
+
+      if (tool.parameters.message) {
+        const messageP = document.createElement('p');
+        messageP.textContent = tool.parameters.message;
+        contentDiv.appendChild(messageP);
+      }
+
+      // Add success indicator
+      const successP = document.createElement('p');
+      successP.textContent = `{"success":true,"emoji":"${tool.parameters.emoji}","displayed":true}`;
+      successP.style.fontSize = '12px';
+      successP.style.color = '#666';
+      successP.style.marginTop = '10px';
+      contentDiv.appendChild(successP);
+
+      toolDiv.appendChild(roleLabel);
+      toolDiv.appendChild(contentDiv);
+      messagesContainer.appendChild(toolDiv);
+      scrollToBottom();
 
       // Return success result
       return {
@@ -182,8 +190,10 @@
       }
 
       for (const line of lines) {
+        // console.log(line); // Uncomment for debugging
         if (line.startsWith('event: ')) {
           currentEvent = line.substring(7);
+          // console.log('Event:', currentEvent); // Uncomment for debugging
         } else if (line.startsWith('data: ')) {
           const data = line.substring(6);
 
@@ -210,8 +220,33 @@
               console.error('Error processing frontend tool request:', err);
             }
             currentEvent = null;
+          } else if (currentEvent === 'tool_result') {
+            // Display backend tool result as a separate TOOL message
+            try {
+              const toolResult = JSON.parse(data);
+              console.log('Backend tool result:', toolResult);
+
+              const toolDiv = document.createElement('div');
+              toolDiv.className = 'message tool';
+
+              const roleLabel = document.createElement('div');
+              roleLabel.className = 'message-role';
+              roleLabel.textContent = 'tool';
+
+              const contentDiv = document.createElement('div');
+              contentDiv.className = 'message-content';
+              contentDiv.innerHTML = `<strong>🔧 Tool: ${toolResult.tool_name}</strong><br>${toolResult.content}`;
+
+              toolDiv.appendChild(roleLabel);
+              toolDiv.appendChild(contentDiv);
+              messagesContainer.appendChild(toolDiv);
+              scrollToBottom();
+            } catch (err) {
+              console.error('Error processing tool result:', err);
+            }
+            currentEvent = null;
           } else {
-            // Regular text data
+            // Regular text data - append to assistant message
             assistantContent.textContent += data;
             scrollToBottom();
           }
