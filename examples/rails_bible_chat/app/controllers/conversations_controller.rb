@@ -59,13 +59,29 @@ class ConversationsController < ApplicationController
     @conversation = ActiveIntelligence::Conversation.find(params[:id])
     agent = @conversation.agent
 
-    message_content = params[:message]
-    response = agent.send_message(message_content)
+    # Check if we're resuming from frontend tool execution
+    if params[:tool_results].present?
+      response = agent.continue_with_tool_results(params[:tool_results])
+    else
+      message_content = params[:message]
+      response = agent.send_message(message_content)
+    end
 
-    render json: {
-      response: response,
-      message_count: @conversation.message_count
-    }
+    # Handle different response types
+    if response.is_a?(Hash) && response[:status] == :awaiting_frontend_tool
+      render json: {
+        type: 'frontend_tool_request',
+        tools: response[:tools],
+        conversation_id: response[:conversation_id],
+        message_count: @conversation.message_count
+      }
+    else
+      render json: {
+        type: 'completed',
+        response: response,
+        message_count: @conversation.message_count
+      }
+    end
   rescue StandardError => e
     Rails.logger.error "Error sending message: #{e.message}\n#{e.backtrace.join("\n")}"
     render json: {

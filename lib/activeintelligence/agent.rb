@@ -1,6 +1,13 @@
 # lib/active_intelligence/agent.rb
 module ActiveIntelligence
   class Agent
+    # Agent execution states
+    STATES = {
+      idle: 'idle',
+      awaiting_frontend_tool: 'awaiting_frontend_tool',
+      completed: 'completed'
+    }.freeze
+
     class << self
       def inherited(subclass)
         subclass.instance_variable_set(:@model_name, nil)
@@ -36,7 +43,7 @@ module ActiveIntelligence
     end
 
     # Instance attributes
-    attr_reader :objective, :messages, :options, :tools, :conversation
+    attr_reader :objective, :messages, :options, :tools, :conversation, :state
 
     def initialize(objective: nil, options: {}, tools: nil, conversation: nil)
       @objective = objective
@@ -47,9 +54,11 @@ module ActiveIntelligence
       # Initialize messages based on memory strategy
       if self.class.memory == :active_record
         raise ConfigurationError, "Conversation required for :active_record memory" unless @conversation
+        load_state_from_conversation
         @messages = load_messages_from_db
       else
         @messages = []
+        @state = STATES[:idle]
       end
 
       setup_api_client
@@ -57,16 +66,59 @@ module ActiveIntelligence
 
     # Main method to send messages that delegates to appropriate handler
     def send_message(message, stream: false, **options, &block)
+      # Save agent class name to conversation for reconstruction
+      persist_agent_class if @conversation
+
       if stream && block_given?
         send_message_streaming(message, options, &block)
         process_tool_calls_streaming(&block)
       else
-        responses = []
         response = send_message_static(message, options)
-        responses << response
-        responses += process_tool_calls
-        responses.flatten.map(&:content).join("\n\n")
+        result = process_tool_calls
+
+        # Check if we paused for frontend tools
+        if paused_for_frontend?
+          return build_frontend_response
+        end
+
+        # Normal completion
+        update_state(STATES[:completed])
+        [response, *result].flatten.map(&:content).join("\n\n")
       end
+    end
+
+    # Resume execution after frontend tool completes
+    def continue_with_tool_results(tool_results)
+      unless @state == STATES[:awaiting_frontend_tool]
+        raise Error, "Cannot continue: agent is in state '#{@state}', expected '#{STATES[:awaiting_frontend_tool]}'"
+      end
+
+      # Add tool results to message history
+      Array(tool_results).each do |result|
+        tool_response = Messages::ToolResponse.new(
+          tool_name: result[:tool_name],
+          result: result[:result],
+          tool_use_id: result[:tool_use_id],
+          is_error: result[:is_error] || false
+        )
+        add_message(tool_response)
+      end
+
+      # Clear pending frontend tools
+      clear_pending_frontend_tools
+
+      # Resume processing (will call Claude with tool results)
+      update_state(STATES[:idle])
+      result = process_tool_calls
+
+      # Check if we paused again
+      if paused_for_frontend?
+        return build_frontend_response
+      end
+
+      # Completed
+      update_state(STATES[:completed])
+      result.flatten.map(&:content).join("\n\n")
     end
 
     private
@@ -92,8 +144,18 @@ module ActiveIntelligence
 
         tool_calls = @messages.last.tool_calls
 
-        # Execute ALL tool calls from the response
-        tool_results = tool_calls.map do |tool_call|
+        # Separate frontend and backend tools
+        frontend_tools, backend_tools = partition_tool_calls(tool_calls)
+
+        # If we have frontend tools, pause execution
+        if frontend_tools.any?
+          store_pending_frontend_tools(frontend_tools)
+          update_state(STATES[:awaiting_frontend_tool])
+          return responses  # Pause here
+        end
+
+        # Execute backend tools only
+        tool_results = backend_tools.map do |tool_call|
           tool_use_id = tool_call[:id]
           tool_name = tool_call[:name]
           tool_params = tool_call[:parameters]
@@ -262,6 +324,66 @@ module ActiveIntelligence
       else
         "Tool not found: #{tool_name}"
       end
+    end
+
+    # Partition tools by execution context
+    def partition_tool_calls(tool_calls)
+      frontend_tools = []
+      backend_tools = []
+
+      tool_calls.each do |tool_call|
+        tool = find_tool(tool_call[:name])
+
+        if tool&.class&.frontend?
+          frontend_tools << tool_call
+        else
+          backend_tools << tool_call
+        end
+      end
+
+      [frontend_tools, backend_tools]
+    end
+
+    def find_tool(tool_name)
+      @tools.find do |t|
+        tool_class = t.is_a?(Class) ? t : t.class
+        tool_class.name == tool_name
+      end
+    end
+
+    # State management methods
+    def load_state_from_conversation
+      @state = @conversation.agent_state || STATES[:idle]
+    end
+
+    def update_state(new_state)
+      @state = new_state
+      @conversation&.update(agent_state: new_state)
+    end
+
+    def persist_agent_class
+      return if @conversation.agent_class_name == self.class.name
+      @conversation.update(agent_class_name: self.class.name)
+    end
+
+    def paused_for_frontend?
+      @state == STATES[:awaiting_frontend_tool]
+    end
+
+    def store_pending_frontend_tools(tools)
+      @conversation&.update(pending_frontend_tools: tools)
+    end
+
+    def clear_pending_frontend_tools
+      @conversation&.update(pending_frontend_tools: nil)
+    end
+
+    def build_frontend_response
+      {
+        status: :awaiting_frontend_tool,
+        tools: @conversation.pending_frontend_tools,
+        conversation_id: @conversation.id
+      }
     end
 
     # ActiveRecord memory strategy methods
