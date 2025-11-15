@@ -161,6 +161,11 @@
         body: JSON.stringify({ tool_results: toolResults })
       });
 
+      // Create new assistant message container if not provided
+      if (!assistantContent) {
+        assistantContent = addMessage('assistant', '');
+      }
+
       await processStreamingResponse(response, assistantContent);
     } catch (error) {
       console.error('Error continuing with tool results:', error);
@@ -174,6 +179,7 @@
     const decoder = new TextDecoder();
     let buffer = '';
     let currentEvent = null;
+    let hasTextContent = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -207,19 +213,25 @@
               const toolRequest = JSON.parse(data);
               console.log('Frontend tool request:', toolRequest);
 
-              // Execute all pending frontend tools
+              // Execute all pending frontend tools automatically
               const toolResults = [];
               for (const tool of toolRequest.pending_tools) {
                 const result = await executeFrontendTool(tool);
                 toolResults.push(result);
               }
 
-              // Continue conversation with results
-              await continueWithToolResults(toolResults, assistantContent);
+              // Remove empty assistant message if no text was added
+              if (!hasTextContent && assistantContent && assistantContent.parentElement) {
+                assistantContent.parentElement.remove();
+              }
+
+              // Continue conversation with results (creates new assistant message if needed)
+              await continueWithToolResults(toolResults, null);
             } catch (err) {
               console.error('Error processing frontend tool request:', err);
             }
             currentEvent = null;
+            return; // Exit since we're starting a new stream
           } else if (currentEvent === 'tool_result') {
             // Display backend tool result as a separate TOOL message
             try {
@@ -247,14 +259,24 @@
             currentEvent = null;
           } else {
             // Regular text data - append to assistant message
-            assistantContent.textContent += data;
-            scrollToBottom();
+            if (data.trim()) {
+              hasTextContent = true;
+              if (assistantContent) {
+                assistantContent.textContent += data;
+              }
+              scrollToBottom();
+            }
           }
         } else if (line === '') {
           // Empty line resets event type
           currentEvent = null;
         }
       }
+    }
+
+    // Remove empty assistant message if no text was added
+    if (!hasTextContent && assistantContent && assistantContent.parentElement) {
+      assistantContent.parentElement.remove();
     }
   }
 
