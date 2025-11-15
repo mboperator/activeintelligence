@@ -14,38 +14,132 @@ module ActiveIntelligence
       end
 
       def call(messages, system_prompt, options = {})
-        formatted_messages = format_messages(messages, system_prompt)
-        params = build_request_params(formatted_messages, options)
+        Instrumentation.instrument('api_call', provider: :openai, model: @model, message_count: messages.length) do |payload|
+          start_time = Time.now
 
-        uri = URI(OPENAI_API_URL)
-        http = setup_http_client(uri)
-        request = build_request(uri, params)
+          formatted_messages = format_messages(messages, system_prompt)
+          params = build_request_params(formatted_messages, options)
 
-        response = http.request(request)
-        normalize_response(response)
+          # Log API request if enabled
+          if Config.settings[:log_api_requests]
+            Config.log(:debug, {
+              event: 'api_request',
+              provider: 'openai',
+              url: OPENAI_API_URL,
+              model: @model,
+              message_count: messages.length,
+              system_prompt_length: system_prompt&.length || 0,
+              tools_count: options[:tools]&.length || 0
+            })
+          end
+
+          uri = URI(OPENAI_API_URL)
+          http = setup_http_client(uri)
+          request = build_request(uri, params)
+
+          response = http.request(request)
+          result = normalize_response(response)
+
+          # Calculate metrics
+          duration_ms = ((Time.now - start_time) * 1000).round(2)
+
+          # Log API response
+          if Config.settings[:log_token_usage] && result[:usage]
+            Config.log(:info, {
+              event: 'api_response',
+              provider: 'openai',
+              model: @model,
+              duration_ms: duration_ms,
+              usage: result[:usage],
+              stop_reason: result[:stop_reason],
+              tool_calls_count: result[:tool_calls]&.length || 0
+            })
+          end
+
+          # Enrich instrumentation payload
+          payload[:duration_ms] = duration_ms
+          payload[:usage] = result[:usage]
+          payload[:stop_reason] = result[:stop_reason]
+          payload[:tool_calls_count] = result[:tool_calls]&.length || 0
+
+          result
+        end
       rescue => e
+        Config.log(:error, {
+          event: 'api_error',
+          provider: 'openai',
+          error: e.class.name,
+          error_message: e.message
+        })
         handle_error(e)
       end
 
       def call_streaming(messages, system_prompt, options = {}, &block)
-        formatted_messages = format_messages(messages, system_prompt)
-        params = build_request_params(formatted_messages, options.merge(stream: true))
+        Instrumentation.instrument('api_call_streaming', provider: :openai, model: @model, message_count: messages.length) do |payload|
+          start_time = Time.now
 
-        uri = URI(OPENAI_API_URL)
-        http = setup_http_client(uri)
-        request = build_request(uri, params)
+          formatted_messages = format_messages(messages, system_prompt)
+          params = build_request_params(formatted_messages, options.merge(stream: true))
 
-        http.request(request) do |response|
-          if response.code != "200"
-            error_msg = handle_error(StandardError.new("#{response.code} - #{response.body}"))
-            yield error_msg if block_given?
-            return error_msg
+          # Log API request if enabled
+          if Config.settings[:log_api_requests]
+            Config.log(:debug, {
+              event: 'api_request_streaming',
+              provider: 'openai',
+              url: OPENAI_API_URL,
+              model: @model,
+              message_count: messages.length,
+              system_prompt_length: system_prompt&.length || 0,
+              tools_count: options[:tools]&.length || 0
+            })
           end
 
-          result = process_streaming_response(response, &block)
-          return result
+          uri = URI(OPENAI_API_URL)
+          http = setup_http_client(uri)
+          request = build_request(uri, params)
+
+          result = nil
+          http.request(request) do |response|
+            if response.code != "200"
+              error_msg = handle_error(StandardError.new("#{response.code} - #{response.body}"))
+              yield error_msg if block_given?
+              return error_msg
+            end
+
+            result = process_streaming_response(response, &block)
+          end
+
+          # Calculate metrics
+          duration_ms = ((Time.now - start_time) * 1000).round(2)
+
+          # Log API response
+          if Config.settings[:log_token_usage] && result[:usage]
+            Config.log(:info, {
+              event: 'api_response_streaming',
+              provider: 'openai',
+              model: @model,
+              duration_ms: duration_ms,
+              usage: result[:usage],
+              stop_reason: result[:stop_reason],
+              tool_calls_count: result[:tool_calls]&.length || 0
+            })
+          end
+
+          # Enrich instrumentation payload
+          payload[:duration_ms] = duration_ms
+          payload[:usage] = result[:usage]
+          payload[:stop_reason] = result[:stop_reason]
+          payload[:tool_calls_count] = result[:tool_calls]&.length || 0
+
+          result
         end
       rescue => e
+        Config.log(:error, {
+          event: 'api_error_streaming',
+          provider: 'openai',
+          error: e.class.name,
+          error_message: e.message
+        })
         error_msg = handle_error(e)
         yield error_msg if block_given?
         error_msg
@@ -177,10 +271,18 @@ module ActiveIntelligence
               logger.warn "Response was truncated due to max_tokens limit. Consider increasing max_tokens."
             end
 
+            # Extract usage information
+            usage = result["usage"] ? {
+              input_tokens: result["usage"]["prompt_tokens"],
+              output_tokens: result["usage"]["completion_tokens"],
+              total_tokens: result["usage"]["total_tokens"]
+            } : nil
+
             return {
               content: message["content"] || "",
               tool_calls: tool_calls,
-              stop_reason: finish_reason
+              stop_reason: finish_reason,
+              usage: usage
             }
           end
 
@@ -194,6 +296,7 @@ module ActiveIntelligence
         full_response = ""
         tool_calls = {}
         finish_reason = nil
+        usage = nil
         buffer = ""
 
         response.read_body do |chunk|
@@ -217,6 +320,15 @@ module ActiveIntelligence
 
             json_data = safe_parse_json(data)
             next unless json_data
+
+            # Extract usage (OpenAI sends this in the final chunk)
+            if json_data["usage"]
+              usage = {
+                input_tokens: json_data["usage"]["prompt_tokens"],
+                output_tokens: json_data["usage"]["completion_tokens"],
+                total_tokens: json_data["usage"]["total_tokens"]
+              }
+            end
 
             # Extract delta
             if json_data["choices"] && json_data["choices"].length > 0
@@ -264,7 +376,8 @@ module ActiveIntelligence
         {
           content: full_response,
           tool_calls: parsed_tool_calls,
-          stop_reason: finish_reason
+          stop_reason: finish_reason,
+          usage: usage
         }
       end
     end
