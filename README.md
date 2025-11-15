@@ -16,6 +16,7 @@ A Ruby gem for building AI agents powered by Claude (Anthropic's LLM). Create co
 - **Prompt Caching**: Built-in support for 80-90% cost reduction via prompt caching
 - **Extended Thinking**: Captures Claude's reasoning process for complex tasks
 - **Production-Ready**: Optimized for Claude Code-level performance
+- **Observability**: Comprehensive metrics, logging, callbacks, and ActiveSupport::Notifications
 
 ## Installation
 
@@ -273,6 +274,111 @@ class DataTool < ActiveIntelligence::Tool
 end
 ```
 
+## Observability & Monitoring
+
+ActiveIntelligence includes comprehensive observability features for production use. Track metrics, monitor performance, and integrate with your monitoring tools.
+
+### Metrics
+
+Every agent tracks detailed metrics including tokens, costs, latency, and success rates:
+
+```ruby
+agent = MyAgent.new
+agent.send_message("Hello")
+agent.send_message("Tell me a joke")
+
+# Access detailed metrics
+puts agent.metrics.to_h
+# => {
+#      messages: { total: 4, user: 2, agent: 2 },
+#      tokens: { total: 523, input: 123, output: 400, cached: 100, cache_hit_rate_percent: 81.3 },
+#      api_calls: { total: 2, average_latency_ms: 1234.56, p95_latency_ms: 1500.0 },
+#      tool_calls: { total: 3, average_latency_ms: 45.23, by_tool: { "DadJokeTool" => 3 } },
+#      estimated_cost_usd: 0.0234
+#    }
+
+# Pretty print for humans
+puts agent.metrics.to_s
+```
+
+### Lifecycle Callbacks
+
+Hook into the agent execution lifecycle:
+
+```ruby
+class MyAgent < ActiveIntelligence::Agent
+  model :claude
+  memory :in_memory
+  identity "You are a helpful assistant"
+
+  # Track all messages
+  before_message do |data|
+    puts "Sending: #{data[:content]}"
+  end
+
+  after_message do |data|
+    puts "Response received in #{data[:metrics][:api_calls][:average_latency_ms]}ms"
+    puts "Total cost so far: $#{data[:metrics][:estimated_cost_usd]}"
+
+    # Send to monitoring
+    StatsD.gauge('ai.conversation_length', data[:message_count])
+  end
+
+  # Monitor tool performance
+  after_tool_call do |data|
+    puts "Tool #{data[:tool_name]} took #{data[:duration_ms]}ms"
+
+    # Track in APM
+    NewRelic::Agent.record_metric("AI/Tool/#{data[:tool_name]}", data[:duration_ms])
+  end
+
+  # Error tracking
+  on_error do |data|
+    Sentry.capture_exception(data[:error], extra: data[:context])
+  end
+end
+```
+
+### ActiveSupport::Notifications
+
+Integrate with Rails monitoring tools:
+
+```ruby
+# Subscribe to all AI events
+ActiveSupport::Notifications.subscribe(/\.activeintelligence$/) do |name, start, finish, id, payload|
+  duration = (finish - start) * 1000
+  Rails.logger.info("AI Event: #{name}, Duration: #{duration}ms")
+
+  # Automatically integrates with Scout, New Relic, Datadog, etc.
+end
+
+# Subscribe to specific events
+ActiveSupport::Notifications.subscribe('api_call.activeintelligence') do |name, start, finish, id, payload|
+  StatsD.histogram('ai.api_call.duration', (finish - start) * 1000)
+  StatsD.gauge('ai.tokens_used', payload[:usage][:total_tokens])
+end
+```
+
+### Structured Logging
+
+Configure detailed logging for debugging and monitoring:
+
+```ruby
+ActiveIntelligence.configure do |config|
+  config.settings[:log_level] = :info              # :debug, :info, :warn, :error
+  config.settings[:log_api_requests] = false       # Log full API requests
+  config.settings[:log_tool_executions] = true     # Log tool executions
+  config.settings[:log_token_usage] = true         # Log token consumption
+  config.settings[:structured_logging] = true      # JSON-formatted logs
+end
+
+# Logs are emitted as structured JSON:
+# {"timestamp":"2024-11-15T10:30:45Z","event":"api_response","provider":"claude",
+#  "duration_ms":1234.56,"usage":{"total_tokens":523},"stop_reason":"end_turn"}
+```
+
+**For complete documentation**, see [OBSERVABILITY.md](OBSERVABILITY.md).
+
 ## API Reference
 
 ### Agent DSL
@@ -311,6 +417,14 @@ ActiveIntelligence.configure do |config|
   # Logging (set to DEBUG to see Claude's thinking process)
   config.settings[:logger] = defined?(Rails) ?
     Rails.logger : Logger.new(STDOUT, level: Logger::INFO)
+
+  # Observability settings
+  config.settings[:log_level] = :info              # :debug, :info, :warn, :error
+  config.settings[:log_api_requests] = false       # Log full API request/response
+  config.settings[:log_tool_executions] = true     # Log tool call executions
+  config.settings[:log_token_usage] = true         # Log token consumption and costs
+  config.settings[:structured_logging] = true      # Use JSON structured logging
+  config.settings[:enable_notifications] = true    # Enable ActiveSupport::Notifications
 end
 ```
 
@@ -323,6 +437,12 @@ end
 | `max_tokens` | `4096` | Maximum tokens per response |
 | `enable_prompt_caching` | `true` | Enable prompt caching for cost savings |
 | `logger` | `Logger.new(STDOUT)` | Logger instance for debugging |
+| `log_level` | `:info` | Logging verbosity level |
+| `log_api_requests` | `false` | Log full API requests/responses (debug mode) |
+| `log_tool_executions` | `true` | Log tool execution events |
+| `log_token_usage` | `true` | Log token consumption and costs |
+| `structured_logging` | `true` | Use JSON-formatted structured logs |
+| `enable_notifications` | `true` | Enable ActiveSupport::Notifications instrumentation |
 
 ## Supported Models
 

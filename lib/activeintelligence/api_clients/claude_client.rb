@@ -16,38 +16,132 @@ module ActiveIntelligence
       end
 
       def call(messages, system_prompt, options = {})
-        formatted_messages = format_messages(messages)
-        params = build_request_params(formatted_messages, system_prompt, options)
+        Instrumentation.instrument('api_call', provider: :claude, model: @model, message_count: messages.length) do |payload|
+          start_time = Time.now
 
-        uri = URI(ANTHROPIC_API_URL)
-        http = setup_http_client(uri)
-        request = build_request(uri, params)
+          formatted_messages = format_messages(messages)
+          params = build_request_params(formatted_messages, system_prompt, options)
 
-        response = http.request(request)
-        process_response(response)
+          # Log API request if enabled
+          if Config.settings[:log_api_requests]
+            Config.log(:debug, {
+              event: 'api_request',
+              provider: 'claude',
+              url: ANTHROPIC_API_URL,
+              model: @model,
+              message_count: messages.length,
+              system_prompt_length: system_prompt&.length || 0,
+              tools_count: options[:tools]&.length || 0
+            })
+          end
+
+          uri = URI(ANTHROPIC_API_URL)
+          http = setup_http_client(uri)
+          request = build_request(uri, params)
+
+          response = http.request(request)
+          result = process_response(response)
+
+          # Calculate metrics
+          duration_ms = ((Time.now - start_time) * 1000).round(2)
+
+          # Log API response
+          if Config.settings[:log_token_usage] && result[:usage]
+            Config.log(:info, {
+              event: 'api_response',
+              provider: 'claude',
+              model: @model,
+              duration_ms: duration_ms,
+              usage: result[:usage],
+              stop_reason: result[:stop_reason],
+              tool_calls_count: result[:tool_calls]&.length || 0
+            })
+          end
+
+          # Enrich instrumentation payload
+          payload[:duration_ms] = duration_ms
+          payload[:usage] = result[:usage]
+          payload[:stop_reason] = result[:stop_reason]
+          payload[:tool_calls_count] = result[:tool_calls]&.length || 0
+
+          result
+        end
       rescue => e
+        Config.log(:error, {
+          event: 'api_error',
+          provider: 'claude',
+          error: e.class.name,
+          error_message: e.message
+        })
         handle_error(e)
       end
 
       def call_streaming(messages, system_prompt, options = {}, &block)
-        formatted_messages = format_messages(messages)
-        params = build_request_params(formatted_messages, system_prompt, options.merge(stream: true))
+        Instrumentation.instrument('api_call_streaming', provider: :claude, model: @model, message_count: messages.length) do |payload|
+          start_time = Time.now
 
-        uri = URI(ANTHROPIC_API_URL)
-        http = setup_http_client(uri)
-        request = build_request(uri, params, stream: true)
+          formatted_messages = format_messages(messages)
+          params = build_request_params(formatted_messages, system_prompt, options.merge(stream: true))
 
-        http.request(request) do |response|
-          if response.code != "200"
-            error_msg = handle_error(StandardError.new("#{response.code} - #{response.body}"))
-            yield error_msg if block_given?
-            return error_msg
+          # Log API request if enabled
+          if Config.settings[:log_api_requests]
+            Config.log(:debug, {
+              event: 'api_request_streaming',
+              provider: 'claude',
+              url: ANTHROPIC_API_URL,
+              model: @model,
+              message_count: messages.length,
+              system_prompt_length: system_prompt&.length || 0,
+              tools_count: options[:tools]&.length || 0
+            })
           end
 
-          result = process_streaming_response(response, &block)
-          return result
+          uri = URI(ANTHROPIC_API_URL)
+          http = setup_http_client(uri)
+          request = build_request(uri, params, stream: true)
+
+          result = nil
+          http.request(request) do |response|
+            if response.code != "200"
+              error_msg = handle_error(StandardError.new("#{response.code} - #{response.body}"))
+              yield error_msg if block_given?
+              return error_msg
+            end
+
+            result = process_streaming_response(response, &block)
+          end
+
+          # Calculate metrics
+          duration_ms = ((Time.now - start_time) * 1000).round(2)
+
+          # Log API response
+          if Config.settings[:log_token_usage] && result[:usage]
+            Config.log(:info, {
+              event: 'api_response_streaming',
+              provider: 'claude',
+              model: @model,
+              duration_ms: duration_ms,
+              usage: result[:usage],
+              stop_reason: result[:stop_reason],
+              tool_calls_count: result[:tool_calls]&.length || 0
+            })
+          end
+
+          # Enrich instrumentation payload
+          payload[:duration_ms] = duration_ms
+          payload[:usage] = result[:usage]
+          payload[:stop_reason] = result[:stop_reason]
+          payload[:tool_calls_count] = result[:tool_calls]&.length || 0
+
+          result
         end
       rescue => e
+        Config.log(:error, {
+          event: 'api_error_streaming',
+          provider: 'claude',
+          error: e.class.name,
+          error_message: e.message
+        })
         error_msg = handle_error(e)
         yield error_msg if block_given?
         error_msg
@@ -192,6 +286,15 @@ module ActiveIntelligence
             # Safely extract text content (may be empty if only tool calls)
             text_content = content.first&.dig("text") || ""
 
+            # Extract usage information
+            usage = result["usage"] ? {
+              input_tokens: result["usage"]["input_tokens"],
+              output_tokens: result["usage"]["output_tokens"],
+              total_tokens: result["usage"]["input_tokens"] + result["usage"]["output_tokens"],
+              cache_creation_input_tokens: result["usage"]["cache_creation_input_tokens"],
+              cache_read_input_tokens: result["usage"]["cache_read_input_tokens"]
+            } : nil
+
             if tool_calls && !tool_calls.empty?
               return {
                 content: text_content,
@@ -202,7 +305,8 @@ module ActiveIntelligence
                     parameters: tc["input"]
                   }
                 end,
-                stop_reason: stop_reason
+                stop_reason: stop_reason,
+                usage: usage
               }
             end
 
@@ -210,7 +314,8 @@ module ActiveIntelligence
             return {
               content: text_content,
               tool_calls: [],
-              stop_reason: stop_reason
+              stop_reason: stop_reason,
+              usage: usage
             }
           end
 
@@ -226,6 +331,7 @@ module ActiveIntelligence
         stop_reason = nil
         thinking_content = ""
         current_tool_input = {}  # Track tool inputs by index
+        usage = nil
 
         buffer = ""
 
@@ -285,8 +391,18 @@ module ActiveIntelligence
               current_tool_input[index] ||= ""
               current_tool_input[index] << partial_json
             end
-            if json_data["type"] == "message_delta" && json_data["delta"]["stop_reason"]
-              stop_reason = json_data["delta"]["stop_reason"]
+            # Capture usage and stop_reason from message_delta
+            if json_data["type"] == "message_delta"
+              stop_reason = json_data["delta"]["stop_reason"] if json_data["delta"]["stop_reason"]
+              if json_data["usage"]
+                usage = {
+                  input_tokens: json_data["usage"]["input_tokens"] || 0,
+                  output_tokens: json_data["usage"]["output_tokens"] || 0,
+                  total_tokens: (json_data["usage"]["input_tokens"] || 0) + (json_data["usage"]["output_tokens"] || 0),
+                  cache_creation_input_tokens: json_data["usage"]["cache_creation_input_tokens"],
+                  cache_read_input_tokens: json_data["usage"]["cache_read_input_tokens"]
+                }
+              end
             end
           end
         end
@@ -321,7 +437,8 @@ module ActiveIntelligence
               parameters: tc[:input]
             }
           end,
-          stop_reason: stop_reason
+          stop_reason: stop_reason,
+          usage: usage
         }
       end
     end

@@ -14,6 +14,11 @@ module ActiveIntelligence
         subclass.instance_variable_set(:@memory_type, nil)
         subclass.instance_variable_set(:@identity, nil)
         subclass.instance_variable_set(:@tools, [])
+        subclass.instance_variable_set(:@before_message_callbacks, [])
+        subclass.instance_variable_set(:@after_message_callbacks, [])
+        subclass.instance_variable_set(:@before_tool_call_callbacks, [])
+        subclass.instance_variable_set(:@after_tool_call_callbacks, [])
+        subclass.instance_variable_set(:@on_error_callbacks, [])
       end
 
       # DSL methods
@@ -40,16 +45,64 @@ module ActiveIntelligence
       def tools
         @tools || []
       end
+
+      # Callback registration DSL
+      def before_message(&block)
+        @before_message_callbacks ||= []
+        @before_message_callbacks << block
+      end
+
+      def after_message(&block)
+        @after_message_callbacks ||= []
+        @after_message_callbacks << block
+      end
+
+      def before_tool_call(&block)
+        @before_tool_call_callbacks ||= []
+        @before_tool_call_callbacks << block
+      end
+
+      def after_tool_call(&block)
+        @after_tool_call_callbacks ||= []
+        @after_tool_call_callbacks << block
+      end
+
+      def on_error(&block)
+        @on_error_callbacks ||= []
+        @on_error_callbacks << block
+      end
+
+      # Callback accessors
+      def before_message_callbacks
+        @before_message_callbacks || []
+      end
+
+      def after_message_callbacks
+        @after_message_callbacks || []
+      end
+
+      def before_tool_call_callbacks
+        @before_tool_call_callbacks || []
+      end
+
+      def after_tool_call_callbacks
+        @after_tool_call_callbacks || []
+      end
+
+      def on_error_callbacks
+        @on_error_callbacks || []
+      end
     end
 
     # Instance attributes
-    attr_reader :objective, :messages, :options, :tools, :conversation, :state
+    attr_reader :objective, :messages, :options, :tools, :conversation, :state, :metrics
 
     def initialize(objective: nil, options: {}, tools: nil, conversation: nil)
       @objective = objective
       @options = options
       @tools = tools || self.class.tools.map(&:new)
       @conversation = conversation
+      @metrics = Metrics.new
 
       # Initialize messages based on memory strategy
       if self.class.memory == :active_record
@@ -213,6 +266,14 @@ module ActiveIntelligence
         persist_message_to_db(message)
       end
       @messages << message
+
+      # Track message metrics
+      case message
+      when Messages::UserMessage
+        @metrics.record_user_message
+      when Messages::AgentResponse
+        @metrics.record_agent_message
+      end
     end
 
     def process_tool_calls
@@ -281,24 +342,61 @@ module ActiveIntelligence
     end
 
     def send_message_static(content, options = {})
-      message = Messages::UserMessage.new(content:)
-      add_message(message)
+      Instrumentation.instrument('message', content: content, options: options) do |payload|
+        # Run before_message callbacks
+        run_callbacks(:before_message, content: content, options: options)
 
-      response = call_api
-      add_message(response)
+        message = Messages::UserMessage.new(content:)
+        add_message(message)
 
-      response
+        response = call_api
+        add_message(response)
+
+        # Enrich payload with results
+        payload[:response] = response
+        payload[:message_count] = @messages.length
+        payload[:metrics] = @metrics.to_h
+
+        # Run after_message callbacks
+        run_callbacks(:after_message,
+          content: content,
+          response: response,
+          message_count: @messages.length,
+          metrics: @metrics.to_h
+        )
+
+        response
+      end
+    rescue => e
+      @metrics.record_error(e.class.name)
+      run_callbacks(:on_error, error: e, context: { content: content, options: options })
+      raise
     end
 
     # Handle streaming message requests
     def send_message_streaming(content, options = {}, &block)
+      # Run before_message callbacks
+      run_callbacks(:before_message, content: content, options: options)
+
       message = Messages::UserMessage.new(content:)
       add_message(message)
 
       response = call_streaming_api(&block)
       add_message(response)
-      
+
+      # Run after_message callbacks
+      run_callbacks(:after_message,
+        content: content,
+        response: response,
+        message_count: @messages.length,
+        metrics: @metrics.to_h
+      )
+
       response
+    rescue => e
+      @metrics.record_error(e.class.name)
+      run_callbacks(:on_error, error: e, context: { content: content, options: options })
+      raise
     end
 
     def process_tool_calls_streaming(&block)
@@ -436,6 +534,14 @@ module ActiveIntelligence
 
       # Pass Message objects directly - client will format them
       response = @api_client.call_streaming(@messages, system_prompt, api_options, &block)
+
+      # Track API metrics if available
+      if response[:usage] && response[:duration_ms]
+        @metrics.record_api_call(response[:duration_ms], response[:usage], response[:stop_reason])
+      elsif response[:usage]
+        @metrics.record_api_call(nil, response[:usage], response[:stop_reason])
+      end
+
       Messages::AgentResponse.new(content: response[:content], tool_calls: response[:tool_calls])
     end
 
@@ -451,6 +557,14 @@ module ActiveIntelligence
 
       # Pass Message objects directly - client will format them
       result = @api_client.call(@messages, system_prompt, api_options)
+
+      # Track API metrics if available
+      if result[:usage] && result[:duration_ms]
+        @metrics.record_api_call(result[:duration_ms], result[:usage], result[:stop_reason])
+      elsif result[:usage]
+        @metrics.record_api_call(nil, result[:usage], result[:stop_reason])
+      end
+
       AgentResponse.new(content: result[:content], tool_calls: result[:tool_calls])
     end
 
@@ -463,17 +577,65 @@ module ActiveIntelligence
 
     # Execute a specific tool call
     def execute_tool_call(tool_name, tool_params)
-      # Find matching tool
-      tool = @tools.find do |t|
-        t.is_a?(Class) ? t.name == tool_name : t.class.name == tool_name
-      end
+      Instrumentation.instrument('tool_call', tool_name: tool_name, params: tool_params) do |payload|
+        start_time = Time.now
 
-      if tool
-        # Execute tool and get result
-        tool_instance = tool.is_a?(Class) ? tool.new : tool
-        tool_instance.call(tool_params)
-      else
-        "Tool not found: #{tool_name}"
+        # Run before_tool_call callbacks
+        run_callbacks(:before_tool_call, tool_name: tool_name, params: tool_params)
+
+        # Find matching tool
+        tool = @tools.find do |t|
+          t.is_a?(Class) ? t.name == tool_name : t.class.name == tool_name
+        end
+
+        result = if tool
+          # Execute tool and get result
+          tool_instance = tool.is_a?(Class) ? tool.new : tool
+          tool_instance.call(tool_params)
+        else
+          "Tool not found: #{tool_name}"
+        end
+
+        # Track metrics
+        duration_ms = ((Time.now - start_time) * 1000).round(2)
+        success = result.is_a?(Hash) ? !result[:error] : true
+        @metrics.record_tool_call(tool_name, duration_ms, success)
+
+        # Enrich payload
+        payload[:result] = result
+        payload[:duration_ms] = duration_ms
+        payload[:success] = success
+
+        # Run after_tool_call callbacks
+        run_callbacks(:after_tool_call,
+          tool_name: tool_name,
+          params: tool_params,
+          result: result,
+          duration_ms: duration_ms,
+          success: success
+        )
+
+        result
+      end
+    rescue => e
+      run_callbacks(:on_error, error: e, context: { tool_name: tool_name, params: tool_params })
+      raise
+    end
+
+    # Run callbacks for a specific event type
+    def run_callbacks(type, **data)
+      callbacks = self.class.send("#{type}_callbacks")
+      callbacks.each do |callback|
+        begin
+          callback.call(data)
+        rescue => e
+          Config.log(:error, {
+            event: 'callback_execution_error',
+            callback_type: type,
+            error: e.class.name,
+            error_message: e.message
+          })
+        end
       end
     end
 
