@@ -1,0 +1,29 @@
+# Node modules
+node_modules/
+
+# Logs
+log/*.log
+log/
+
+# Temp files
+tmp/
+tmp/*
+
+# Bundler
+.bundle
+
+# Database
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-*
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
