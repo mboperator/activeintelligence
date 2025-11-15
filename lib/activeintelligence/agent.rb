@@ -4,7 +4,7 @@ module ActiveIntelligence
     # Agent execution states
     STATES = {
       idle: 'idle',
-      awaiting_frontend_tool: 'awaiting_frontend_tool',
+      awaiting_tool_results: 'awaiting_tool_results',
       completed: 'completed'
     }.freeze
 
@@ -78,7 +78,7 @@ module ActiveIntelligence
 
         # Check if we paused for frontend tools
         if paused_for_frontend?
-          return build_frontend_response
+          return build_pending_tools_response
         end
 
         # Normal completion
@@ -89,30 +89,56 @@ module ActiveIntelligence
 
     # Resume execution after frontend tool completes
     def continue_with_tool_results(tool_results, stream: false, &block)
-      unless @state == STATES[:awaiting_frontend_tool]
-        raise Error, "Cannot continue: agent is in state '#{@state}', expected '#{STATES[:awaiting_frontend_tool]}'"
+      unless @state == STATES[:awaiting_tool_results]
+        raise Error, "Cannot continue: agent is in state '#{@state}', expected '#{STATES[:awaiting_tool_results]}'"
       end
 
-      # Add tool results to message history
-      Array(tool_results).each do |result|
-        tool_response = Messages::ToolResponse.new(
-          tool_name: result[:tool_name],
-          result: result[:result],
-          tool_use_id: result[:tool_use_id],
-          is_error: result[:is_error] || false
-        )
-        add_message(tool_response)
+      # Update pending tool responses to complete
+      Array(tool_results).each do |tr|
+        # Find by message_id (from frontend) or tool_use_id (fallback)
+        tool_response = if tr[:message_id]
+          # Frontend sent DB message ID
+          if self.class.memory == :active_record
+            db_message = @conversation.messages.find(tr[:message_id])
+            # Find in-memory equivalent
+            @messages.find { |m| m.is_a?(Messages::ToolResponse) && m.tool_use_id == db_message.tool_use_id }
+          end
+        else
+          # Fallback to tool_use_id
+          find_pending_tool_response(tr[:tool_use_id])
+        end
+
+        unless tool_response
+          raise Error, "Tool response not found for: #{tr.inspect}"
+        end
+
+        # Mark complete in memory
+        tool_response.complete!(tr[:result])
+
+        # Update DB if using ActiveRecord
+        if self.class.memory == :active_record
+          db_message = @conversation.messages.find_by(tool_use_id: tool_response.tool_use_id)
+          db_message&.complete!(tr[:result])
+        end
       end
 
-      # Clear pending frontend tools
-      clear_pending_frontend_tools
+      # Reload messages from DB to ensure consistency
+      if self.class.memory == :active_record
+        @messages = load_messages_from_db
+      end
 
-      # Resume processing (will call Claude with tool results)
+      # Check if ALL tools are complete
+      if has_pending_tools?
+        # Still waiting for more frontend tools
+        return build_pending_tools_response
+      end
+
+      # All complete - call Claude with ALL results
       update_state(STATES[:idle])
 
       if stream && block_given?
-        # Stream the tool results that were just added
-        @messages.select { |m| m.is_a?(Messages::ToolResponse) }
+        # Stream the completed tool results
+        @messages.select { |m| m.is_a?(Messages::ToolResponse) && m.complete? }
                  .last(tool_results.size)
                  .each do |tool_response|
           yield "\n\n"
@@ -120,24 +146,64 @@ module ActiveIntelligence
           yield "\n\n"
         end
 
-        # Continue processing with streaming
+        # Call Claude with completed tool results (streaming)
+        response = call_streaming_api(&block)
+        add_message(response)
+
+        # Continue processing with streaming (handles any new tool calls)
         process_tool_calls_streaming(&block)
       else
-        # Static mode
-        result = process_tool_calls
+        # Static mode - call Claude with completed tool results
+        response = call_api
+        add_message(response)
+        responses = [response]
 
-        # Check if we paused again
+        # Process any new tool calls
+        result = process_tool_calls
+        responses.concat(result) if result
+
+        # Check if we paused again (new tool calls)
         if paused_for_frontend?
-          return build_frontend_response
+          return build_pending_tools_response
         end
 
         # Completed
         update_state(STATES[:completed])
-        result.flatten.map(&:content).join("\n\n")
+        responses.flatten.map(&:content).join("\n\n")
       end
     end
 
+    def paused_for_frontend?
+      @state == STATES[:awaiting_tool_results]
+    end
+
     private
+
+    # Check if there are any pending tool responses
+    def has_pending_tools?
+      @messages.any? { |m| m.is_a?(Messages::ToolResponse) && m.pending? }
+    end
+
+    # Get all pending tool responses
+    def pending_tools
+      @messages.select { |m| m.is_a?(Messages::ToolResponse) && m.pending? }
+    end
+
+    # Find a specific pending tool response by tool_use_id
+    def find_pending_tool_response(tool_use_id)
+      @messages.find do |m|
+        m.is_a?(Messages::ToolResponse) &&
+        m.tool_use_id == tool_use_id &&
+        m.pending?
+      end
+    end
+
+    # Find a tool response by tool_use_id (any status)
+    def find_tool_response(tool_use_id)
+      @messages.find do |m|
+        m.is_a?(Messages::ToolResponse) && m.tool_use_id == tool_use_id
+      end
+    end
 
     def add_message(message)
       if self.class.memory == :active_record
@@ -160,36 +226,49 @@ module ActiveIntelligence
 
         tool_calls = @messages.last.tool_calls
 
-        # Separate frontend and backend tools
+        # Create pending ToolResponse messages for ALL tool calls upfront
+        tool_calls.each do |tool_call|
+          # Skip if already exists (idempotency)
+          next if find_tool_response(tool_call[:id])
+
+          tool_response = Messages::ToolResponse.new(
+            tool_name: tool_call[:name],
+            tool_use_id: tool_call[:id],
+            parameters: tool_call[:parameters],
+            status: Messages::ToolResponse::STATUSES[:pending]
+          )
+          add_message(tool_response)
+          responses << tool_response
+        end
+
+        # Partition tools by execution context
         frontend_tools, backend_tools = partition_tool_calls(tool_calls)
 
-        # If we have frontend tools, pause execution
-        if frontend_tools.any?
-          store_pending_frontend_tools(frontend_tools)
-          update_state(STATES[:awaiting_frontend_tool])
-          return responses  # Pause here
-        end
-
-        # Execute backend tools only
-        tool_results = backend_tools.map do |tool_call|
-          tool_use_id = tool_call[:id]
-          tool_name = tool_call[:name]
-          tool_params = tool_call[:parameters]
+        # Execute backend tools and mark complete
+        backend_tools.each do |tool_call|
+          tool_response = find_pending_tool_response(tool_call[:id])
+          next unless tool_response  # Safety check
 
           # Execute the tool
-          tool_output = execute_tool_call(tool_name, tool_params)
+          result = execute_tool_call(tool_call[:name], tool_call[:parameters])
 
-          # Check if the tool returned an error
-          is_error = tool_output.is_a?(Hash) && tool_output[:error] == true
+          # Update to complete
+          tool_response.complete!(result)
 
-          Messages::ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
+          # If using ActiveRecord, update the DB record too
+          if self.class.memory == :active_record
+            db_message = @conversation.messages.find_by(tool_use_id: tool_call[:id])
+            db_message&.complete!(result)
+          end
         end
 
-        # Add all tool results to message history
-        tool_results.each { |tr| add_message(tr) }
-        responses += tool_results
+        # Check if we have pending frontend tools
+        if has_pending_tools?
+          update_state(STATES[:awaiting_tool_results])
+          return responses  # Pause - don't call Claude yet
+        end
 
-        # Get next response from Claude
+        # All tools complete - call Claude with results
         response = call_api
         add_message(response)
         responses << response
@@ -232,51 +311,81 @@ module ActiveIntelligence
 
         tool_calls = @messages.last.tool_calls
 
-        # Separate frontend and backend tools
-        frontend_tools, backend_tools = partition_tool_calls(tool_calls)
+        # Create pending ToolResponse messages for ALL tool calls upfront
+        tool_calls.each do |tool_call|
+          # Skip if already exists (idempotency)
+          next if find_tool_response(tool_call[:id])
 
-        # Execute backend tools first and stream their results
-        backend_tool_results = backend_tools.map do |tool_call|
-          tool_use_id = tool_call[:id]
-          tool_name = tool_call[:name]
-          tool_params = tool_call[:parameters]
-
-          # Execute the tool
-          tool_output = execute_tool_call(tool_name, tool_params)
-
-          # Check if the tool returned an error
-          is_error = tool_output.is_a?(Hash) && tool_output[:error] == true
-
-          Messages::ToolResponse.new(tool_name:, result: tool_output, tool_use_id:, is_error:)
+          tool_response = Messages::ToolResponse.new(
+            tool_name: tool_call[:name],
+            tool_use_id: tool_call[:id],
+            parameters: tool_call[:parameters],
+            status: Messages::ToolResponse::STATUSES[:pending]
+          )
+          add_message(tool_response)
         end
 
-        # Add backend tool results to message history and yield them
-        backend_tool_results.each do |tool_response|
-          add_message(tool_response)
+        # Partition tools by execution context
+        frontend_tools, backend_tools = partition_tool_calls(tool_calls)
+
+        # Execute backend tools and mark complete
+        backend_tools.each do |tool_call|
+          tool_response = find_pending_tool_response(tool_call[:id])
+          next unless tool_response  # Safety check
+
+          # Execute the tool
+          result = execute_tool_call(tool_call[:name], tool_call[:parameters])
+
+          # Update to complete
+          tool_response.complete!(result)
+
+          # If using ActiveRecord, update the DB record too
+          if self.class.memory == :active_record
+            db_message = @conversation.messages.find_by(tool_use_id: tool_call[:id])
+            db_message&.complete!(result)
+          end
+
+          # Stream the result to the user
           yield "\n\n"
           yield tool_response.content
           yield "\n\n"
         end
 
-        # If we have frontend tools, pause execution and emit special event
-        if frontend_tools.any?
-          store_pending_frontend_tools(frontend_tools)
-          update_state(STATES[:awaiting_frontend_tool])
+        # Check if we have pending frontend tools
+        if has_pending_tools?
+          update_state(STATES[:awaiting_tool_results])
+
+          # Build pending tool data with DB message IDs if using ActiveRecord
+          pending_tool_data = pending_tools.map do |tr|
+            tool_data = {
+              tool_use_id: tr.tool_use_id,
+              tool_name: tr.tool_name,
+              parameters: tr.parameters
+            }
+
+            # Include DB message ID for ActiveRecord memory
+            if self.class.memory == :active_record
+              db_message = @conversation.messages.find_by(tool_use_id: tr.tool_use_id)
+              tool_data[:message_id] = db_message&.id
+            end
+
+            tool_data
+          end
 
           # Emit SSE event for frontend tool request
           yield "event: frontend_tool_request\n"
           yield "data: #{JSON.generate({
-            status: 'awaiting_frontend_tool',
-            tools: frontend_tools,
+            status: 'awaiting_tool_results',
+            pending_tools: pending_tool_data,
             conversation_id: @conversation&.id
           })}\n\n"
 
           # Close the stream gracefully
           yield "data: [DONE]\n\n"
-          return  # Pause here - frontend will resume with new request
+          return  # Pause - frontend will resume with continue_with_tool_results
         end
 
-        # Get next response from Claude (only if no frontend tools)
+        # All tools complete - call Claude with results
         response = call_streaming_api(&block)
         add_message(response)
       end
@@ -403,23 +512,27 @@ module ActiveIntelligence
       @conversation.update(agent_class_name: self.class.name)
     end
 
-    def paused_for_frontend?
-      @state == STATES[:awaiting_frontend_tool]
-    end
+    def build_pending_tools_response
+      pending_tool_data = pending_tools.map do |tr|
+        tool_data = {
+          tool_use_id: tr.tool_use_id,
+          tool_name: tr.tool_name,
+          parameters: tr.parameters
+        }
 
-    def store_pending_frontend_tools(tools)
-      @conversation&.update(pending_frontend_tools: tools)
-    end
+        # If using ActiveRecord, include DB message ID
+        if self.class.memory == :active_record
+          db_message = @conversation.messages.find_by(tool_use_id: tr.tool_use_id)
+          tool_data[:message_id] = db_message&.id
+        end
 
-    def clear_pending_frontend_tools
-      @conversation&.update(pending_frontend_tools: nil)
-    end
+        tool_data
+      end
 
-    def build_frontend_response
       {
-        status: :awaiting_frontend_tool,
-        tools: @conversation.pending_frontend_tools,
-        conversation_id: @conversation.id
+        status: :awaiting_tool_results,
+        pending_tools: pending_tool_data,
+        conversation_id: @conversation&.id
       }
     end
 
@@ -431,8 +544,14 @@ module ActiveIntelligence
         # STI automatically loads the correct subclass (UserMessage, AssistantMessage, ToolMessage)
         case msg
         when ActiveIntelligence::ToolMessage
-          result = msg.content.is_a?(String) ? JSON.parse(msg.content, symbolize_names: true) : msg.content
-          Messages::ToolResponse.new(tool_name: msg.tool_name, result: result, tool_use_id: msg.tool_use_id)
+          result = msg.content.present? ? JSON.parse(msg.content, symbolize_names: true) : nil
+          Messages::ToolResponse.new(
+            tool_name: msg.tool_name,
+            result: result,
+            tool_use_id: msg.tool_use_id,
+            status: msg.status,
+            parameters: msg.parameters
+          )
         when ActiveIntelligence::AssistantMessage
           tool_calls = msg.tool_calls.is_a?(String) ? JSON.parse(msg.tool_calls, symbolize_names: true) : (msg.tool_calls || [])
           Messages::AgentResponse.new(content: msg.content, tool_calls: tool_calls)
@@ -452,20 +571,24 @@ module ActiveIntelligence
       when Messages::UserMessage
         ActiveIntelligence::UserMessage.create!(
           conversation: @conversation,
-          content: message.content
+          content: message.content,
+          status: 'complete'
         )
       when Messages::AgentResponse
         ActiveIntelligence::AssistantMessage.create!(
           conversation: @conversation,
           content: message.content,
-          tool_calls: message.tool_calls&.any? ? message.tool_calls.to_json : nil
+          tool_calls: message.tool_calls&.any? ? message.tool_calls.to_json : nil,
+          status: 'complete'
         )
       when Messages::ToolResponse
         ActiveIntelligence::ToolMessage.create!(
           conversation: @conversation,
-          content: message.result.to_json,
+          content: message.result ? message.result.to_json : nil,
           tool_name: message.tool_name,
-          tool_use_id: message.tool_use_id
+          tool_use_id: message.tool_use_id,
+          status: message.status,
+          parameters: message.parameters
         )
       end
     rescue StandardError => e

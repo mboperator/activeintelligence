@@ -32,33 +32,35 @@ end
 ### 2. Agent State Management (`lib/activeintelligence/agent.rb`)
 
 **Changes:**
-- Added `STATES` constant (idle, awaiting_frontend_tool, completed)
+- Added `STATES` constant (idle, awaiting_tool_results, completed)
 - Added `@state` instance variable
 - Updated `initialize` to load state from conversation
 - Modified `send_message` to handle frontend tool pauses
 - Added `continue_with_tool_results` method for resuming
-- Updated `process_tool_calls` to pause when frontend tools detected
+- Updated `process_tool_calls` to create ALL tool responses optimistically with status
+- Updated `process_tool_calls_streaming` to create ALL tool responses optimistically with status
 - Added helper methods:
   - `partition_tool_calls` - Separates frontend/backend tools
   - `find_tool` - Finds tool by name
+  - `has_pending_tools?` - Checks if any tool responses are pending
+  - `pending_tools` - Returns all pending tool responses
+  - `find_pending_tool_response` - Finds pending tool response by tool_use_id
+  - `find_tool_response` - Finds any tool response by tool_use_id
   - `load_state_from_conversation` - Restores state from DB
   - `update_state` - Persists state to DB
   - `persist_agent_class` - Saves agent class name for reconstruction
   - `paused_for_frontend?` - Checks if paused
-  - `store_pending_frontend_tools` - Saves tools waiting for frontend
-  - `clear_pending_frontend_tools` - Clears pending tools
-  - `build_frontend_response` - Formats response for frontend
+  - `build_pending_tools_response` - Formats response with pending tools for frontend
 
 **Flow:**
 ```ruby
 # Initial message
 response = agent.send_message("Show me an emoji")
-# => { status: :awaiting_frontend_tool, tools: [...], conversation_id: 123 }
+# => { status: :awaiting_tool_results, pending_tools: [...], conversation_id: 123 }
 
 # React executes the tool and sends result back
 tool_results = [{
   tool_use_id: "toolu_abc123",
-  tool_name: "show_emoji",
   result: { success: true, data: { emoji: "🙏", displayed: true } }
 }]
 
@@ -66,14 +68,30 @@ final_response = agent.continue_with_tool_results(tool_results)
 # => "I've displayed the praying hands emoji for you..."
 ```
 
+**Key Architecture:**
+- ALL tool responses are created as "pending" when Claude requests them
+- Backend tools execute immediately and mark status as "complete"
+- Frontend tools stay "pending" until browser executes them
+- Agent only calls Claude when ALL tool responses are complete
+- Message history with status is single source of truth
+
 ### 3. Database Schema (`examples/rails_bible_chat/db/migrate/...`)
 
-**Migration:** `20251115000001_add_agent_state_to_conversations.rb`
+**Migrations:**
+1. `20251115000001_add_agent_state_to_conversations.rb`
+2. `20251115000002_add_status_and_parameters_to_messages.rb`
 
 **New columns on `active_intelligence_conversations`:**
 - `agent_state` (string, default: 'idle') - Current execution state
 - `agent_class_name` (string) - Agent class for reconstruction
-- `pending_frontend_tools` (json) - Tool calls waiting for frontend execution
+
+**New columns on `active_intelligence_messages`:**
+- `status` (string, default: 'complete') - Message status (pending, complete, error)
+- `parameters` (json) - Tool parameters (denormalized for frontend convenience)
+
+**Indexes:**
+- `[:conversation_id, :status]` - For querying pending tools
+- `[:conversation_id, :type, :status]` - For filtering by message type and status
 
 ### 4. Example Frontend Tool (`examples/rails_bible_chat/app/tools/show_emoji_tool.rb`)
 
@@ -113,13 +131,14 @@ end
 - Checks for `tool_results` param (resuming)
 - Calls `continue_with_tool_results` when resuming
 - Returns different JSON based on response type:
-  - `type: 'frontend_tool_request'` when paused
+  - `type: 'frontend_tool_request'` with `pending_tools` when paused
   - `type: 'completed'` when done
 
 **Changes to `send_message_streaming` method (streaming mode):**
 - Checks for `tool_results` param (resuming)
 - Calls `continue_with_tool_results(stream: true)` when resuming
-- Emits SSE event `frontend_tool_request` when frontend tool is needed
+- Emits SSE event `frontend_tool_request` with `pending_tools` when frontend tool is needed
+- Pending tools include `tool_use_id`, `tool_name`, `parameters`, and optionally `message_id`
 - Closes stream after emitting event
 - Frontend resumes by making new POST with tool results
 
@@ -141,22 +160,31 @@ end
    ↓
 3. Claude responds with tool calls
    ↓
-4. Agent partitions tools into frontend/backend
+4. Agent creates ALL tool responses as "pending" (optimistic)
    ↓
-5a. Backend tools → Execute immediately → Continue loop
-5b. Frontend tools → Pause & return JSON response
+5. Agent partitions tools into frontend/backend
    ↓
-6. React executes frontend tool
+6. Backend tools → Execute and mark "complete"
    ↓
-7. React sends result back via POST with tool_results
+7. Check for pending tools
    ↓
-8. Agent calls continue_with_tool_results()
+8a. If pending tools exist → Pause & return JSON response
+8b. If no pending tools → Call Claude with ALL completed tool results
    ↓
-9. Tool result added to conversation
+9. React executes frontend tool
    ↓
-10. Agent calls Claude with tool result
+10. React sends result back via POST with tool_results
     ↓
-11. Back to step 3 (loop until complete)
+11. Agent calls continue_with_tool_results()
+    ↓
+12. Agent marks frontend tool response as "complete"
+    ↓
+13. Check for pending tools again
+    ↓
+14a. If still pending → Return pending tools response
+14b. If all complete → Call Claude with ALL tool results
+    ↓
+15. Back to step 3 (loop until complete)
 ```
 
 ### Execution Flow (Streaming Mode)
@@ -168,25 +196,33 @@ end
    ↓
 3. Claude responds with tool calls (streaming)
    ↓
-4. Agent partitions tools into frontend/backend
+4. Agent creates ALL tool responses as "pending" (optimistic)
    ↓
-5. Backend tools → Execute immediately → Stream results to React
+5. Agent partitions tools into frontend/backend
    ↓
-6. Frontend tools detected → Emit SSE event 'frontend_tool_request'
+6. Backend tools → Execute and mark "complete" → Stream results to React
    ↓
-7. Stream closes with [DONE]
+7. Check for pending tools
    ↓
-8. React executes frontend tool
+8a. If pending tools → Emit SSE event 'frontend_tool_request' → Stream closes
+8b. If no pending → Call Claude with ALL tool results (streaming)
    ↓
-9. React sends result back via POST with tool_results (new stream opens)
+9. React executes frontend tool
    ↓
-10. Agent calls continue_with_tool_results(stream: true)
+10. React sends result back via POST with tool_results (new stream opens)
     ↓
-11. Tool result added to conversation and streamed
+11. Agent calls continue_with_tool_results(stream: true)
     ↓
-12. Agent calls Claude with tool result (streaming)
+12. Agent marks frontend tool response as "complete"
     ↓
-13. Back to step 3 (loop until complete)
+13. Agent streams the completed tool result
+    ↓
+14. Check for pending tools again
+    ↓
+15a. If still pending → Emit SSE event → Stream closes
+15b. If all complete → Call Claude with ALL tool results (streaming)
+    ↓
+16. Back to step 3 (loop until complete)
 ```
 
 ### Multi-User Support
@@ -223,11 +259,12 @@ rspec spec/activeintelligence/agent_hybrid_tools_spec.rb
   - Parameter validation
 
 - `spec/activeintelligence/agent_hybrid_tools_spec.rb` (18 examples)
-  - Agent state management (idle, awaiting_frontend_tool, completed)
+  - Agent state management (idle, awaiting_tool_results, completed)
   - partition_tool_calls logic
   - find_tool method
+  - has_pending_tools? and pending_tools methods
   - continue_with_tool_results
-  - build_frontend_response
+  - build_pending_tools_response
 
 ### Demo Script
 
@@ -263,13 +300,12 @@ agent = BibleStudyAgent.new(conversation: conversation)
 response = agent.send_message("Show me a praying hands emoji")
 
 # Check response
-puts response[:status]  # => :awaiting_frontend_tool
-puts response[:tools]   # => [{ id: "toolu_...", name: "show_emoji", ... }]
+puts response[:status]        # => :awaiting_tool_results
+puts response[:pending_tools] # => [{ tool_use_id: "toolu_...", tool_name: "show_emoji", parameters: {...} }]
 
 # Simulate frontend execution
 tool_results = [{
-  tool_use_id: response[:tools].first[:id],
-  tool_name: "show_emoji",
+  tool_use_id: response[:pending_tools].first[:tool_use_id],
   result: {
     success: true,
     data: { emoji: "🙏", size: "large", displayed: true }
@@ -282,6 +318,10 @@ puts final_response  # => "I've displayed the praying hands emoji..."
 
 # Check state
 puts agent.state  # => "completed"
+
+# Check message history - all tool responses are in there with status
+puts agent.messages.last.class  # => ActiveIntelligence::Messages::ToolResponse
+puts agent.messages.last.status # => "complete"
 ```
 
 ## Key Benefits
@@ -315,25 +355,32 @@ puts agent.state  # => "completed"
 
 ### Possible Improvements
 
-1. **Streaming Support**
-   - Currently only works with static responses
-   - Could extend to streaming mode
-
-2. **Mixed Tool Calls**
-   - Currently pauses if ANY frontend tool in response
-   - Could execute backend tools first, then pause for frontend
-
-3. **Tool Timeout Handling**
+1. **Tool Timeout Handling**
    - Add timeout for frontend tool execution
    - Auto-fail if user doesn't respond
 
-4. **Tool Permission System**
+2. **Tool Permission System**
    - Ask user to approve frontend tools
    - Remember permissions per tool
 
-5. **Tool Analytics**
+3. **Tool Analytics**
    - Track tool usage metrics
    - Monitor frontend tool performance
+
+4. **Parallel Tool Execution**
+   - Currently backend tools execute sequentially
+   - Could execute multiple backend tools in parallel
+
+### Completed Enhancements
+
+✅ **Streaming Support** (Completed)
+   - Full streaming mode support for frontend tools
+   - SSE events for frontend tool requests
+
+✅ **Mixed Tool Calls** (Completed)
+   - Backend tools execute immediately
+   - Frontend tools pause only after backend tools complete
+   - All tool responses created optimistically with status tracking
 
 ## Files Modified
 
@@ -356,10 +403,18 @@ puts agent.state  # => "completed"
 
 ### For Existing Apps
 
-1. **Run migration:**
+1. **Run migrations:**
    ```bash
+   # Migration 1: Add agent state tracking
    rails generate migration AddAgentStateToConversations
-   # Copy content from examples/rails_bible_chat/db/migrate/20251115000001_add_agent_state_to_conversations.rb
+   # Copy content from:
+   # examples/rails_bible_chat/db/migrate/20251115000001_add_agent_state_to_conversations.rb
+
+   # Migration 2: Add status and parameters to messages
+   rails generate migration AddStatusAndParametersToMessages
+   # Copy content from:
+   # examples/rails_bible_chat/db/migrate/20251115000002_add_status_and_parameters_to_messages.rb
+
    rails db:migrate
    ```
 
@@ -370,12 +425,14 @@ puts agent.state  # => "completed"
 
 3. **Update controller:**
    - Add tool_results handling to send_message action
-   - Check response type before rendering
+   - Update response check from `status: :awaiting_frontend_tool` to `status: :awaiting_tool_results`
+   - Update response key from `tools:` to `pending_tools:`
 
 4. **Update frontend:**
-   - Add frontend tool handler
+   - Add frontend tool handler for SSE event `frontend_tool_request`
+   - Extract `pending_tools` from event data
    - Implement tool-specific UI components
-   - Send results back to Rails
+   - Send results back with `tool_use_id` and `result` (optionally `message_id`)
 
 See `FRONTEND_TOOL_EXAMPLE.md` for complete integration guide.
 

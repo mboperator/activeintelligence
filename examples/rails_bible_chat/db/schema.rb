@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.2].define(version: 2025_11_15_000001) do
+ActiveRecord::Schema[7.2].define(version: 2025_11_15_000002) do
   create_table "active_intelligence_conversations", force: :cascade do |t|
     t.integer "user_id"
     t.string "agent_class", null: false
@@ -21,7 +21,6 @@ ActiveRecord::Schema[7.2].define(version: 2025_11_15_000001) do
     t.datetime "updated_at", null: false
     t.string "agent_state", default: "idle"
     t.string "agent_class_name"
-    t.json "pending_frontend_tools"
     t.index ["agent_class"], name: "index_active_intelligence_conversations_on_agent_class"
     t.index ["agent_state"], name: "index_active_intelligence_conversations_on_agent_state"
     t.index ["status"], name: "index_active_intelligence_conversations_on_status"
@@ -39,7 +38,11 @@ ActiveRecord::Schema[7.2].define(version: 2025_11_15_000001) do
     t.string "tool_use_id"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "status", default: "complete"
+    t.json "parameters"
     t.index ["conversation_id", "created_at"], name: "idx_on_conversation_id_created_at_366fbcff9e"
+    t.index ["conversation_id", "status"], name: "idx_on_conversation_id_status_981a294b68"
+    t.index ["conversation_id", "type", "status"], name: "idx_on_conversation_id_type_status_a849d374cb"
     t.index ["conversation_id"], name: "index_active_intelligence_messages_on_conversation_id"
     t.index ["role"], name: "index_active_intelligence_messages_on_role"
     t.index ["type"], name: "index_active_intelligence_messages_on_type"

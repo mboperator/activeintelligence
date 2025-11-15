@@ -68,10 +68,10 @@ class ConversationsController < ApplicationController
     end
 
     # Handle different response types
-    if response.is_a?(Hash) && response[:status] == :awaiting_frontend_tool
+    if response.is_a?(Hash) && response[:status] == :awaiting_tool_results
       render json: {
         type: 'frontend_tool_request',
-        tools: response[:tools],
+        pending_tools: response[:pending_tools],
         conversation_id: response[:conversation_id],
         message_count: @conversation.message_count
       }

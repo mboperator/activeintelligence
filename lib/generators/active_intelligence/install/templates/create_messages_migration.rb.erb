@@ -10,13 +10,18 @@ class CreateActiveIntelligenceMessages < ActiveRecord::Migration[<%= ActiveRecor
       if ActiveRecord::Base.connection.adapter_name.downcase == 'postgresql'
         t.jsonb :tool_calls, default: []
         t.jsonb :metadata, default: {}
+        t.jsonb :parameters
       else
         t.json :tool_calls, default: []
         t.json :metadata, default: {}
+        t.json :parameters
       end
 
       t.string :tool_name
       t.string :tool_use_id
+
+      # Tool response status tracking
+      t.string :status, default: 'complete'
 
       t.timestamps
     end
@@ -24,5 +29,7 @@ class CreateActiveIntelligenceMessages < ActiveRecord::Migration[<%= ActiveRecor
     add_index :active_intelligence_messages, :type
     add_index :active_intelligence_messages, :role
     add_index :active_intelligence_messages, [:conversation_id, :created_at]
+    add_index :active_intelligence_messages, [:conversation_id, :status]
+    add_index :active_intelligence_messages, [:conversation_id, :type, :status]
   end
 end

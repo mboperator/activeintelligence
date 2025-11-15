@@ -1,4 +1,5 @@
 # lib/active_intelligence/api_clients/claude_client.rb
+require 'pry'
 module ActiveIntelligence
   module ApiClients
     class ClaudeClient < BaseClient
@@ -56,7 +57,9 @@ module ActiveIntelligence
 
       # Format Message objects into Claude API format
       def format_messages(messages)
+        # Filter out pending tool responses - Claude shouldn't see them yet
         messages
+          .reject { |msg| msg.is_a?(Messages::ToolResponse) && msg.pending? }
           .chunk_while { |msg1, msg2|
             # Group consecutive ToolResponses together
             msg1.is_a?(Messages::ToolResponse) && msg2.is_a?(Messages::ToolResponse)
@@ -227,6 +230,7 @@ module ActiveIntelligence
         buffer = ""
 
         response.read_body do |chunk|
+          puts chunk
           buffer += chunk
 
           # Process complete SSE events from the buffer
