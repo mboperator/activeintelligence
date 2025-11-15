@@ -1,5 +1,7 @@
 # lib/active_intelligence.rb
 require_relative 'activeintelligence/config'
+require_relative 'activeintelligence/metrics'
+require_relative 'activeintelligence/instrumentation'
 require_relative 'activeintelligence/agent'
 require_relative 'activeintelligence/messages'
 require_relative 'activeintelligence/api_clients/base_client'
