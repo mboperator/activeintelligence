@@ -1,5 +1,14 @@
 #!/usr/bin/env ruby
-# Test script for frontend/backend hybrid tool execution
+# Demo script for frontend/backend hybrid tool execution
+#
+# This demonstrates the execution_context DSL and tool partitioning functionality.
+# It's NOT a test suite - just prints output to show how the feature works.
+#
+# For actual tests with assertions, see:
+#   - spec/activeintelligence/tool_spec.rb
+#   - spec/activeintelligence/agent_hybrid_tools_spec.rb
+#
+# Run tests with: rake spec
 
 # Add lib to load path
 $LOAD_PATH.unshift File.expand_path('../lib', __dir__)

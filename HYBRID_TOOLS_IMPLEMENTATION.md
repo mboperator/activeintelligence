@@ -169,16 +169,37 @@ end
 
 ### Unit Tests
 
-Run the test script:
+Run the RSpec test suite:
 ```bash
-ruby examples/test_frontend_tools.rb
+rake spec
+# Or specifically:
+rspec spec/activeintelligence/tool_spec.rb
+rspec spec/activeintelligence/agent_hybrid_tools_spec.rb
 ```
 
-**Tests:**
-1. Tool execution context detection
-2. JSON schema generation
-3. Backend tool execution
-4. Frontend tool execution
+**Test Coverage:**
+- `spec/activeintelligence/tool_spec.rb` (14 examples)
+  - execution_context DSL (:frontend, :backend, default)
+  - frontend? and backend? helper methods
+  - JSON schema generation
+  - Tool execution
+  - Parameter validation
+
+- `spec/activeintelligence/agent_hybrid_tools_spec.rb` (18 examples)
+  - Agent state management (idle, awaiting_frontend_tool, completed)
+  - partition_tool_calls logic
+  - find_tool method
+  - continue_with_tool_results
+  - build_frontend_response
+
+### Demo Script
+
+Run the demo to see output:
+```bash
+ruby examples/demo_frontend_tools.rb
+```
+
+This is NOT a test suite - it just demonstrates the functionality by printing output.
 
 ### Integration Testing
 
