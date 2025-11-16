@@ -29,7 +29,7 @@ export default function Index({ conversations }: Props) {
       <div className="container mx-auto px-4 py-8">
         <div className="mb-6 flex items-center justify-between">
           <h2 className="text-2xl font-semibold">Recent Conversations</h2>
-          <Link href="/conversations" method="post" as="button">
+          <Link href="/conversations" method="post">
             <Button className="flex items-center gap-2">
               <PlusCircle className="w-4 h-4" />
               New Conversation

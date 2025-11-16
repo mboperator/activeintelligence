@@ -125,10 +125,10 @@ class ConversationsController < ApplicationController
         end
       end
 
-      # Note: [DONE] is sent by process_tool_calls_streaming if frontend tool is needed
+      # Note: done event is sent by process_tool_calls_streaming if frontend tool is needed
       # Otherwise, we send it here
       unless agent.paused_for_frontend?
-        response.stream.write "data: [DONE]\n\n"
+        response.stream.write "data: #{JSON.generate({type: 'done'})}\n\n"
       end
     rescue IOError
       # Client disconnected

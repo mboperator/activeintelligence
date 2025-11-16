@@ -38,7 +38,6 @@ export default function Show({ conversation, messages: initialMessages }: Props)
   const [messages, setMessages] = useState<Message[]>(initialMessages)
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [streamingContent, setStreamingContent] = useState('')
   const [pendingTools, setPendingTools] = useState<PendingTool[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -48,7 +47,7 @@ export default function Show({ conversation, messages: initialMessages }: Props)
 
   useEffect(() => {
     scrollToBottom()
-  }, [messages, streamingContent])
+  }, [messages])
 
   // Execute frontend tools and send results back
   const executeFrontendTool = async (tool: PendingTool) => {
@@ -81,7 +80,6 @@ export default function Show({ conversation, messages: initialMessages }: Props)
     try {
       setIsLoading(true)
       setPendingTools([])
-      setStreamingContent('')
 
       const response = await fetch(
         `/conversations/${conversation.id}/send_message_streaming`,
@@ -111,23 +109,42 @@ export default function Show({ conversation, messages: initialMessages }: Props)
         buffer = lines.pop() || ''
 
         for (const line of lines) {
-          console.log('SSE line:', line);
           if (line.startsWith('data: ')) {
             const data = line.slice(6)
 
-            if (data === '[DONE]') {
-              return
-            }
-
-            console.log('data', data);
-            // Try to parse as JSON first
+            // All events are now JSON
             try {
               const parsed = JSON.parse(data)
-              console.log('Parsed JSON event:', parsed)
 
-              if (parsed.type === 'tool_result') {
-                console.log('Tool result event:', parsed)
-                // Extract content from various possible locations
+              if (parsed.type === 'done') {
+                // Stream complete
+                setIsLoading(false)
+                return
+              } else if (parsed.type === 'content_delta') {
+                // Text chunk from LLM - update or create last message
+                setMessages(prev => {
+                  const last = prev[prev.length - 1]
+                  // Check if we're continuing to stream into the last message
+                  if (last?.role === 'assistant' && !last.tool_name && last.id === -1) {
+                    // Update the existing streaming message
+                    const updated = [...prev]
+                    updated[updated.length - 1] = {
+                      ...last,
+                      content: last.content + (parsed.delta || '')
+                    }
+                    return updated
+                  } else {
+                    // Start a new streaming message
+                    return [...prev, {
+                      id: -1,
+                      role: 'assistant',
+                      content: parsed.delta || '',
+                      created_at: new Date().toISOString()
+                    }]
+                  }
+                })
+              } else if (parsed.type === 'tool_result') {
+                // Backend tool executed - add to messages
                 const content = parsed.content ||
                                JSON.stringify(parsed.result || parsed.tool_result || parsed, null, 2)
 
@@ -139,17 +156,13 @@ export default function Show({ conversation, messages: initialMessages }: Props)
                   tool_result: parsed.tool_result || parsed.result,
                   created_at: new Date().toISOString(),
                 }
-                console.log('Adding tool result message:', toolResultMessage)
                 setMessages(prev => [...prev, toolResultMessage])
-              } else if (parsed.type === 'message') {
-                setStreamingContent(prev => prev + (parsed.content || ''))
               } else if (parsed.type === 'awaiting_tool_results') {
+                // Frontend tools need to be executed
                 setPendingTools(parsed.pending_tools || [])
               }
             } catch (e) {
-              // Not JSON, treat as plain text chunk
-              console.log('Streaming text chunk:', data)
-              setStreamingContent(prev => prev + data)
+              console.error('Failed to parse JSON event:', e, 'Data:', data)
             }
           }
         }
@@ -187,9 +200,8 @@ export default function Show({ conversation, messages: initialMessages }: Props)
     const userMessage = input
     setInput('')
     setIsLoading(true)
-    setStreamingContent('')
 
-    // Add user message to the messages array immediately
+    // Add user message to messages immediately
     const newUserMessage: Message = {
       id: Date.now(), // Temporary ID
       role: 'user',
@@ -225,24 +237,42 @@ export default function Show({ conversation, messages: initialMessages }: Props)
         buffer = lines.pop() || ''
 
         for (const line of lines) {
-          console.log('SSE line:', line);
           if (line.startsWith('data: ')) {
             const data = line.slice(6)
 
-            if (data === '[DONE]') {
-              setStreamingContent('')
-              setIsLoading(false)
-              return
-            }
-
-            // Try to parse as JSON first (for events)
+            // All events are now JSON
             try {
               const parsed = JSON.parse(data)
-              console.log('Parsed JSON event:', parsed)
 
-              if (parsed.type === 'tool_result') {
-                console.log('Tool result event:', parsed)
-                // Extract content from various possible locations
+              if (parsed.type === 'done') {
+                // Stream complete
+                setIsLoading(false)
+                return
+              } else if (parsed.type === 'content_delta') {
+                // Text chunk from LLM - update or create last message
+                setMessages(prev => {
+                  const last = prev[prev.length - 1]
+                  // Check if we're continuing to stream into the last message
+                  if (last?.role === 'assistant' && !last.tool_name && last.id === -1) {
+                    // Update the existing streaming message
+                    const updated = [...prev]
+                    updated[updated.length - 1] = {
+                      ...last,
+                      content: last.content + (parsed.delta || '')
+                    }
+                    return updated
+                  } else {
+                    // Start a new streaming message
+                    return [...prev, {
+                      id: -1,
+                      role: 'assistant',
+                      content: parsed.delta || '',
+                      created_at: new Date().toISOString()
+                    }]
+                  }
+                })
+              } else if (parsed.type === 'tool_result') {
+                // Backend tool executed - add to messages
                 const content = parsed.content ||
                                JSON.stringify(parsed.result || parsed.tool_result || parsed, null, 2)
 
@@ -254,20 +284,14 @@ export default function Show({ conversation, messages: initialMessages }: Props)
                   tool_result: parsed.tool_result || parsed.result,
                   created_at: new Date().toISOString(),
                 }
-                console.log('Adding tool result message:', toolResultMessage)
                 setMessages(prev => [...prev, toolResultMessage])
-              } else if (parsed.type === 'message') {
-                // Accumulate message content
-                setStreamingContent(prev => prev + (parsed.content || ''))
               } else if (parsed.type === 'awaiting_tool_results') {
                 // Frontend tools need to be executed
                 setPendingTools(parsed.pending_tools || [])
                 setIsLoading(false) // Will be re-enabled when tools execute
               }
             } catch (e) {
-              // Not JSON, treat as plain text chunk
-              console.log('Streaming text chunk:', data)
-              setStreamingContent(prev => prev + data)
+              console.error('Failed to parse JSON event:', e, 'Data:', data)
             }
           }
         }
@@ -275,21 +299,11 @@ export default function Show({ conversation, messages: initialMessages }: Props)
     } catch (error) {
       console.error('Error sending message:', error)
       setIsLoading(false)
-      setStreamingContent('')
     }
   }
 
-  const displayMessages = [...messages]
-  if (streamingContent) {
-    displayMessages.push({
-      id: -1,
-      role: 'assistant',
-      content: streamingContent,
-      created_at: new Date().toISOString(),
-    })
-  }
-
-  console.log('Rendering with messages:', messages.length, 'Display messages:', displayMessages.length)
+  // messages is the single source of truth - display it directly
+  const displayMessages = messages
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
