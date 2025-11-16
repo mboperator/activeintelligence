@@ -2,7 +2,7 @@
 require 'net/http'
 require 'json'
 require 'logger'
-
+require 'pry'
 module ActiveIntelligence
   module ApiClients
     class BaseClient
@@ -24,6 +24,7 @@ module ActiveIntelligence
 
       def handle_error(error, prefix = "API Error")
         message = "#{prefix}: #{error.message}"
+        binding.pry
         logger.error(message)
         message
       end

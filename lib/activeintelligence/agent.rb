@@ -141,8 +141,8 @@ module ActiveIntelligence
         @messages.select { |m| m.is_a?(Messages::ToolResponse) && m.complete? }
                  .last(tool_results.size)
                  .each do |tool_response|
-          yield "event: tool_result\n"
           yield "data: #{JSON.generate({
+            type: 'tool_result',
             tool_name: tool_response.tool_name,
             tool_use_id: tool_response.tool_use_id,
             content: tool_response.content
@@ -349,8 +349,8 @@ module ActiveIntelligence
           end
 
           # Stream the tool result as a separate event
-          yield "event: tool_result\n"
           yield "data: #{JSON.generate({
+            type: 'tool_result',
             tool_name: tool_response.tool_name,
             tool_use_id: tool_response.tool_use_id,
             content: tool_response.content
@@ -366,7 +366,7 @@ module ActiveIntelligence
             tool_data = {
               tool_use_id: tr.tool_use_id,
               tool_name: tr.tool_name,
-              parameters: tr.parameters
+              tool_input: tr.parameters
             }
 
             # Include DB message ID for ActiveRecord memory
@@ -379,15 +379,14 @@ module ActiveIntelligence
           end
 
           # Emit SSE event for frontend tool request
-          yield "event: frontend_tool_request\n"
           yield "data: #{JSON.generate({
-            status: 'awaiting_tool_results',
+            type: 'awaiting_tool_results',
             pending_tools: pending_tool_data,
             conversation_id: @conversation&.id
           })}\n\n"
 
           # Close the stream gracefully
-          yield "data: [DONE]\n\n"
+          yield "data: #{JSON.generate({type: 'done'})}\n\n"
           return  # Pause - frontend will resume with continue_with_tool_results
         end
 
@@ -523,7 +522,7 @@ module ActiveIntelligence
         tool_data = {
           tool_use_id: tr.tool_use_id,
           tool_name: tr.tool_name,
-          parameters: tr.parameters
+          tool_input: tr.parameters
         }
 
         # If using ActiveRecord, include DB message ID

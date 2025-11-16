@@ -10,6 +10,10 @@ gem 'activeintelligence.rb', path: '../..'
 # For API calls (Bible API)
 gem 'httparty', '~> 0.21'
 
+# Vite and Inertia for React frontend
+gem 'vite_rails'
+gem 'inertia_rails', '~> 3.0'
+
 group :development do
   gem 'listen', '~> 3.8'
   gem 'pry'
