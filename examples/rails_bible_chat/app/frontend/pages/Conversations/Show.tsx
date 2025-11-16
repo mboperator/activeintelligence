@@ -6,7 +6,8 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { ArrowLeft, Send, Loader2 } from 'lucide-react'
 import { BibleVerse } from '@/components/BibleVerse'
 import { ThinkingBlock } from '@/components/ThinkingBlock'
-import { v4} from 'uuid'
+import { EmojiExplosion } from '@/components/EmojiExplosion'
+import { v4 } from 'uuid'
 interface Message {
   id: number
   role: string
@@ -140,6 +141,7 @@ export default function Show({ conversation, messages: initialMessages }: Props)
   const [messages, setMessages] = useState<Message[]>(initialMessages)
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [explodingEmoji, setExplodingEmoji] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // Get pending tools from messages
@@ -153,8 +155,20 @@ export default function Show({ conversation, messages: initialMessages }: Props)
     scrollToBottom()
   }, [messages])
 
+  // Auto-execute pending tools when they arrive
+  useEffect(() => {
+    if (pendingTools.length > 0) {
+      const executePendingTools = async () => {
+        for (const tool of pendingTools) {
+          await handleExecuteTool(tool)
+        }
+      }
+      executePendingTools()
+    }
+  }, [pendingTools.length]) // Only trigger when the count changes
+
   // Execute frontend tools and send results back
-  const executeFrontendTool = async (toolMessage: Message) => {
+  const executeFrontendTool = async (toolMessage: Message): Promise<any> => {
     let result: any
 
     // Parse tool input from content
@@ -167,15 +181,21 @@ export default function Show({ conversation, messages: initialMessages }: Props)
 
     switch (toolMessage.tool_name) {
       case 'show_emoji':
-        // Display emoji as requested
+        // Display emoji with explosion animation
         const emoji = toolInput.emoji || '✨'
-        result = {
-          success: true,
-          emoji_displayed: emoji,
-          message: `Displayed emoji: ${emoji}`
-        }
-        // The emoji is already shown in the UI, no need for alert
-        break
+
+        // Return a promise that resolves after the animation
+        return new Promise((resolve) => {
+          setExplodingEmoji(emoji)
+          // The EmojiExplosion component will call setExplodingEmoji(null) when done
+          setTimeout(() => {
+            resolve({
+              success: true,
+              emoji_displayed: emoji,
+              message: `Displayed emoji: ${emoji}`
+            })
+          }, 2500) // Match the animation duration
+        })
 
       default:
         result = {
@@ -438,6 +458,14 @@ export default function Show({ conversation, messages: initialMessages }: Props)
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
+      {/* Emoji Explosion Animation */}
+      {explodingEmoji && (
+        <EmojiExplosion
+          emoji={explodingEmoji}
+          onComplete={() => setExplodingEmoji(null)}
+        />
+      )}
+
       <header className="bg-primary text-primary-foreground border-b">
         <div className="container mx-auto px-4 py-4 flex items-center gap-4">
           <Link href="/conversations">
@@ -489,52 +517,22 @@ export default function Show({ conversation, messages: initialMessages }: Props)
                 </div>
               ))
             )}
-            {/* Pending Tools - Clickable */}
+            {/* Pending Tools - Auto-executing */}
             {pendingTools.length > 0 && (
               <div className="flex gap-3">
                 <Avatar className="w-8 h-8">
-                  <AvatarFallback className="bg-muted">AI</AvatarFallback>
+                  <AvatarFallback className="bg-muted">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  </AvatarFallback>
                 </Avatar>
                 <div className="flex-1">
-                  <div className="space-y-2">
-                    <div className="text-xs font-semibold text-muted-foreground mb-2">
-                      🔧 Click to execute frontend tools:
+                  <div className="inline-block rounded-lg px-4 py-2 bg-muted/50">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span className="text-xs text-muted-foreground">
+                        Executing {pendingTools.length} frontend tool{pendingTools.length > 1 ? 's' : ''}...
+                      </span>
                     </div>
-                    {pendingTools.map((tool) => {
-                      // Parse tool input from content
-                      let toolInput: any = {}
-                      try {
-                        toolInput = tool.content ? JSON.parse(tool.content) : {}
-                      } catch (e) {
-                        toolInput = {}
-                      }
-
-                      return (
-                        <button
-                          key={tool.tool_use_id}
-                          onClick={() => handleExecuteTool(tool)}
-                          className="w-full text-left rounded-lg px-4 py-3 bg-blue-50 dark:bg-blue-950/30 border-2 border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/40 hover:border-blue-300 dark:hover:border-blue-700 transition-colors"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="text-lg">🔧</span>
-                            <div className="flex-1">
-                              <div className="font-semibold text-sm text-blue-900 dark:text-blue-100">
-                                {tool.tool_name}
-                              </div>
-                              <div className="text-xs text-blue-700 dark:text-blue-300 mt-1">
-                                {tool.tool_name === 'show_emoji' && toolInput?.emoji && (
-                                  <span className="text-2xl">{toolInput.emoji}</span>
-                                )}
-                                {tool.tool_name !== 'show_emoji' && (
-                                  <span className="font-mono">{JSON.stringify(toolInput)}</span>
-                                )}
-                              </div>
-                            </div>
-                            <span className="text-blue-600 dark:text-blue-400 text-sm">Click to run →</span>
-                          </div>
-                        </button>
-                      )
-                    })}
                   </div>
                 </div>
               </div>
