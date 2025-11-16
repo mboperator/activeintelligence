@@ -137,16 +137,36 @@ module ActiveIntelligence
     def call(params = {})
       # Convert string keys to symbols
       params = symbolize_keys(params)
-      
+
       # Apply default values
       params = apply_defaults(params)
-      
+
       # Validate parameters
       validate_params!(params)
-      
+
+      # Log tool execution if enabled
+      if Config.settings[:log_tool_executions]
+        Config.log(:debug, {
+          event: 'tool_execution_start',
+          tool_name: self.class.name,
+          params: params
+        })
+      end
+
       # Execute the tool with error handling
       begin
-        execute(params)
+        result = execute(params)
+
+        # Log successful execution
+        if Config.settings[:log_tool_executions]
+          Config.log(:debug, {
+            event: 'tool_execution_success',
+            tool_name: self.class.name,
+            params: params
+          })
+        end
+
+        result
       rescue StandardError => e
         handle_exception(e, params)
       end
@@ -207,10 +227,20 @@ module ActiveIntelligence
     end
     
     def handle_exception(exception, params)
+      # Log the error
+      Config.log(:error, {
+        event: 'tool_execution_error',
+        tool_name: self.class.name,
+        params: params,
+        error_class: exception.class.name,
+        error_message: exception.message,
+        backtrace: exception.backtrace&.first(5)
+      })
+
       # Check if we have a specific rescue handler for this exception class
       handler = find_rescue_handler(exception.class)
-      
-      if handler
+
+      result = if handler
         if handler.is_a?(Symbol)
           send(handler, exception, params)
         else
@@ -223,12 +253,22 @@ module ActiveIntelligence
         # Convert generic exceptions to ToolError
         ToolError.new(
           "Tool execution failed: #{exception.message}",
-          details: { 
+          details: {
             exception_class: exception.class.to_s,
             backtrace: exception.backtrace&.first(3)
           }
         ).to_response
       end
+
+      # Publish instrumentation event for tool errors
+      Instrumentation.publish('tool_error', {
+        tool_name: self.class.name,
+        params: params,
+        error: exception.class.name,
+        error_message: exception.message
+      })
+
+      result
     end
     
     def find_rescue_handler(exception_class)
