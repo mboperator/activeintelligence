@@ -258,8 +258,9 @@ module ActiveIntelligence
               # Append to full response
               full_response << text
 
-              # Yield SSE-formatted chunk to the block
-              yield "data: #{text}\n\n" if block_given?
+              # Yield JSON-wrapped SSE event to the block
+              event_data = { type: "content_delta", delta: text }.to_json
+              yield "data: #{event_data}\n\n" if block_given?
             end
             # Capture thinking blocks (don't yield to user)
             if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "thinking_delta"

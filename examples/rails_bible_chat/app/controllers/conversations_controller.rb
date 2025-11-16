@@ -3,55 +3,56 @@ class ConversationsController < ApplicationController
 
   # Show the main chat interface
   def index
-    @conversations = ActiveIntelligence::Conversation.active.order(created_at: :desc).limit(10)
+    conversations = ActiveIntelligence::Conversation.active.order(created_at: :desc).limit(10)
+
+    render inertia: 'Conversations/Index', props: {
+      conversations: conversations.map do |c|
+        {
+          id: c.id,
+          agent_class: c.agent_class,
+          status: c.status,
+          created_at: c.created_at.iso8601
+        }
+      end
+    }
   end
 
   # Show a specific conversation
   def show
-    @conversation = ActiveIntelligence::Conversation.find(params[:id])
-    @messages = @conversation.messages.order(:created_at)
+    conversation = ActiveIntelligence::Conversation.find(params[:id])
+    messages = conversation.messages.order(:created_at)
 
-    respond_to do |format|
-      format.html
-      format.json do
-        render json: {
-          conversation: {
-            id: @conversation.id,
-            agent_class: @conversation.agent_class,
-            status: @conversation.status,
-            created_at: @conversation.created_at
-          },
-          messages: @messages.map do |msg|
-            {
-              id: msg.id,
-              role: msg.role,
-              content: msg.content,
-              tool_name: msg.tool_name,
-              created_at: msg.created_at
-            }
-          end
+    render inertia: 'Conversations/Show', props: {
+      conversation: {
+        id: conversation.id,
+        agent_class: conversation.agent_class,
+        status: conversation.status,
+        created_at: conversation.created_at.iso8601
+      },
+      messages: messages.map do |msg|
+        {
+          id: msg.id,
+          role: msg.role,
+          content: msg.content,
+          tool_name: msg.tool_name,
+          tool_calls: msg.tool_calls,
+          tool_result: msg.content,
+          tool_use_id: msg.tool_use_id,
+          status: msg.status,
+          created_at: msg.created_at.iso8601
         }
       end
-    end
+    }
   end
 
   # Create a new conversation
   def create
-    @conversation = ActiveIntelligence::Conversation.create!(
+    conversation = ActiveIntelligence::Conversation.create!(
       agent_class: 'BibleStudyAgent',
       objective: params[:objective] || 'Bible study and exploration'
     )
 
-    respond_to do |format|
-      format.html { redirect_to conversation_path(@conversation) }
-      format.json do
-        render json: {
-          id: @conversation.id,
-          agent_class: @conversation.agent_class,
-          created_at: @conversation.created_at
-        }, status: :created
-      end
-    end
+    redirect_to conversation_path(conversation)
   end
 
   # Send a message (non-streaming)
@@ -126,10 +127,10 @@ class ConversationsController < ApplicationController
         end
       end
 
-      # Note: [DONE] is sent by process_tool_calls_streaming if frontend tool is needed
+      # Note: done event is sent by process_tool_calls_streaming if frontend tool is needed
       # Otherwise, we send it here
       unless agent.paused_for_frontend?
-        response.stream.write "data: [DONE]\n\n"
+        response.stream.write "data: #{JSON.generate({type: 'done'})}\n\n"
       end
     rescue IOError
       # Client disconnected
