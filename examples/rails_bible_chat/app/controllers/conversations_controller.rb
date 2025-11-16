@@ -36,7 +36,7 @@ class ConversationsController < ApplicationController
           content: msg.content,
           tool_name: msg.tool_name,
           tool_calls: msg.tool_calls,
-          tool_result: msg.tool_result,
+          tool_result: msg.content,
           created_at: msg.created_at.iso8601
         }
       end

@@ -27,11 +27,19 @@ interface Props {
   messages: Message[]
 }
 
+interface PendingTool {
+  tool_use_id: string
+  tool_name: string
+  tool_input: any
+  message_id?: string
+}
+
 export default function Show({ conversation, messages: initialMessages }: Props) {
   const [messages, setMessages] = useState<Message[]>(initialMessages)
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
+  const [pendingTools, setPendingTools] = useState<PendingTool[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = () => {
@@ -42,6 +50,136 @@ export default function Show({ conversation, messages: initialMessages }: Props)
     scrollToBottom()
   }, [messages, streamingContent])
 
+  // Execute frontend tools and send results back
+  const executeFrontendTool = async (tool: PendingTool) => {
+    let result: any
+
+    switch (tool.tool_name) {
+      case 'show_emoji':
+        // Display emoji as requested
+        const emoji = tool.tool_input.emoji || '✨'
+        result = {
+          success: true,
+          emoji_displayed: emoji,
+          message: `Displayed emoji: ${emoji}`
+        }
+        // Show the emoji visually
+        alert(emoji) // Simple implementation - you can replace with a nicer modal
+        break
+
+      default:
+        result = {
+          error: true,
+          message: `Unknown frontend tool: ${tool.tool_name}`
+        }
+    }
+
+    return result
+  }
+
+  const sendToolResults = async (toolResults: Array<{ tool_use_id: string, result: any, message_id?: string }>) => {
+    try {
+      setIsLoading(true)
+      setPendingTools([])
+      setStreamingContent('')
+
+      const response = await fetch(
+        `/conversations/${conversation.id}/send_message_streaming`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+            'X-CSRF-Token': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '',
+          },
+          body: JSON.stringify({ tool_results: toolResults })
+        }
+      )
+
+      if (!response.body) throw new Error('No response body')
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          console.log('SSE line:', line);
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6)
+
+            if (data === '[DONE]') {
+              return
+            }
+
+            console.log('data', data);
+            // Try to parse as JSON first
+            try {
+              const parsed = JSON.parse(data)
+              console.log('Parsed JSON event:', parsed)
+
+              if (parsed.type === 'tool_result') {
+                console.log('Tool result event:', parsed)
+                // Extract content from various possible locations
+                const content = parsed.content ||
+                               JSON.stringify(parsed.result || parsed.tool_result || parsed, null, 2)
+
+                const toolResultMessage: Message = {
+                  id: Date.now() + Math.random(),
+                  role: 'assistant',
+                  content: content,
+                  tool_name: parsed.tool_name,
+                  tool_result: parsed.tool_result || parsed.result,
+                  created_at: new Date().toISOString(),
+                }
+                console.log('Adding tool result message:', toolResultMessage)
+                setMessages(prev => [...prev, toolResultMessage])
+              } else if (parsed.type === 'message') {
+                setStreamingContent(prev => prev + (parsed.content || ''))
+              } else if (parsed.type === 'awaiting_tool_results') {
+                setPendingTools(parsed.pending_tools || [])
+              }
+            } catch (e) {
+              // Not JSON, treat as plain text chunk
+              console.log('Streaming text chunk:', data)
+              setStreamingContent(prev => prev + data)
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error sending tool results:', error)
+      setIsLoading(false)
+    }
+  }
+
+  // Auto-execute pending tools when they arrive
+  useEffect(() => {
+    if (pendingTools.length > 0) {
+      const executePendingTools = async () => {
+        const toolResults = await Promise.all(
+          pendingTools.map(async (tool) => {
+            const result = await executeFrontendTool(tool)
+            return {
+              tool_use_id: tool.tool_use_id,
+              result: result,
+              message_id: tool.message_id
+            }
+          })
+        )
+        await sendToolResults(toolResults)
+      }
+      executePendingTools()
+    }
+  }, [pendingTools])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!input.trim() || isLoading) return
@@ -50,6 +188,15 @@ export default function Show({ conversation, messages: initialMessages }: Props)
     setInput('')
     setIsLoading(true)
     setStreamingContent('')
+
+    // Add user message to the messages array immediately
+    const newUserMessage: Message = {
+      id: Date.now(), // Temporary ID
+      role: 'user',
+      content: userMessage,
+      created_at: new Date().toISOString(),
+    }
+    setMessages(prev => [...prev, newUserMessage])
 
     try {
       const response = await fetch(
@@ -78,30 +225,49 @@ export default function Show({ conversation, messages: initialMessages }: Props)
         buffer = lines.pop() || ''
 
         for (const line of lines) {
+          console.log('SSE line:', line);
           if (line.startsWith('data: ')) {
             const data = line.slice(6)
 
             if (data === '[DONE]') {
-              // Reload the page to get updated messages
-              router.reload({ only: ['messages'] })
               setStreamingContent('')
               setIsLoading(false)
               return
             }
 
+            // Try to parse as JSON first (for events)
             try {
               const parsed = JSON.parse(data)
+              console.log('Parsed JSON event:', parsed)
 
-              if (parsed.type === 'message') {
+              if (parsed.type === 'tool_result') {
+                console.log('Tool result event:', parsed)
+                // Extract content from various possible locations
+                const content = parsed.content ||
+                               JSON.stringify(parsed.result || parsed.tool_result || parsed, null, 2)
+
+                const toolResultMessage: Message = {
+                  id: Date.now() + Math.random(),
+                  role: 'assistant',
+                  content: content,
+                  tool_name: parsed.tool_name,
+                  tool_result: parsed.tool_result || parsed.result,
+                  created_at: new Date().toISOString(),
+                }
+                console.log('Adding tool result message:', toolResultMessage)
+                setMessages(prev => [...prev, toolResultMessage])
+              } else if (parsed.type === 'message') {
+                // Accumulate message content
                 setStreamingContent(prev => prev + (parsed.content || ''))
-              } else if (parsed.type === 'tool_result') {
-                // Tool result handled, continue streaming
-              } else if (parsed.type === 'frontend_tool_request') {
-                // Handle frontend tool request if needed
-                console.log('Frontend tool requested:', parsed)
+              } else if (parsed.type === 'awaiting_tool_results') {
+                // Frontend tools need to be executed
+                setPendingTools(parsed.pending_tools || [])
+                setIsLoading(false) // Will be re-enabled when tools execute
               }
             } catch (e) {
-              // Skip invalid JSON
+              // Not JSON, treat as plain text chunk
+              console.log('Streaming text chunk:', data)
+              setStreamingContent(prev => prev + data)
             }
           }
         }
@@ -122,6 +288,8 @@ export default function Show({ conversation, messages: initialMessages }: Props)
       created_at: new Date().toISOString(),
     })
   }
+
+  console.log('Rendering with messages:', messages.length, 'Display messages:', displayMessages.length)
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -180,6 +348,28 @@ export default function Show({ conversation, messages: initialMessages }: Props)
                   </div>
                 </div>
               ))
+            )}
+            {/* Pending Tools Indicator */}
+            {pendingTools.length > 0 && (
+              <div className="flex gap-3">
+                <Avatar className="w-8 h-8">
+                  <AvatarFallback className="bg-muted">AI</AvatarFallback>
+                </Avatar>
+                <div className="flex-1">
+                  <div className="inline-block rounded-lg px-4 py-2 bg-muted">
+                    <div className="text-xs font-semibold mb-1 opacity-70">
+                      ⚙️ Executing frontend tools...
+                    </div>
+                    <div className="space-y-1">
+                      {pendingTools.map((tool) => (
+                        <div key={tool.tool_use_id} className="text-sm">
+                          {tool.tool_name} - {JSON.stringify(tool.tool_input)}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
             )}
             <div ref={messagesEndRef} />
           </div>
