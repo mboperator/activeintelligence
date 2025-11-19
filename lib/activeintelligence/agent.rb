@@ -186,11 +186,85 @@ module ActiveIntelligence
       end
     end
 
+    # Resume execution when tool results are already complete but weren't sent to the LLM
+    # This handles scenarios where:
+    # - Tools were executed and marked complete
+    # - But something happened (crash, error, etc.) before sending results to Claude
+    # - The conversation needs to be resumed from where it left off
+    def resume_with_completed_tools(stream: false, &block)
+      # Validate that we have completed tool results to send
+      unless has_completed_tools_to_send?
+        raise Error, "Cannot resume: no completed tool results found at the end of the conversation"
+      end
+
+      # Reset state to idle if we're in awaiting_tool_results state
+      # (This handles the case where tools completed but state wasn't updated)
+      update_state(STATES[:idle]) if @state == STATES[:awaiting_tool_results]
+
+      if stream && block_given?
+        # Stream mode - send completed tool results and continue
+        response = call_streaming_api(&block)
+        add_message(response)
+
+        # Process any new tool calls
+        process_tool_calls_streaming(&block)
+      else
+        # Static mode - send completed tool results and continue
+        response = call_api
+        add_message(response)
+        responses = [response]
+
+        # Process any new tool calls
+        result = process_tool_calls
+        responses.concat(result) if result
+
+        # Check if we paused for frontend tools
+        if paused_for_frontend?
+          return build_pending_tools_response
+        end
+
+        # Completed
+        update_state(STATES[:completed])
+
+        # Return only the final text response
+        if result && !result.empty?
+          final_response = responses.reverse.find { |r| r.is_a?(Messages::AgentResponse) }
+          final_response&.content || response.content
+        else
+          response.content
+        end
+      end
+    end
+
     def paused_for_frontend?
       @state == STATES[:awaiting_tool_results]
     end
 
     private
+
+    # Check if there are completed tool results at the end of the conversation
+    # that haven't been sent to the LLM yet
+    def has_completed_tools_to_send?
+      return false if @messages.empty?
+
+      # Look at the last few messages to find the pattern:
+      # - One or more ToolResponse messages (complete status)
+      # - NOT followed by an AgentResponse
+      # This indicates tools were executed but the LLM hasn't seen the results yet
+
+      last_message = @messages.last
+      return false unless last_message.is_a?(Messages::ToolResponse) && last_message.complete?
+
+      # Find all consecutive completed tool responses at the end
+      completed_tool_count = 0
+      @messages.reverse_each do |msg|
+        break unless msg.is_a?(Messages::ToolResponse) && msg.complete?
+        completed_tool_count += 1
+      end
+
+      # We have completed tools to send
+      completed_tool_count > 0
+    end
 
     # Check if there are any pending tool responses
     def has_pending_tools?
