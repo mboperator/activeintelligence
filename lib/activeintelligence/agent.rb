@@ -83,7 +83,17 @@ module ActiveIntelligence
 
         # Normal completion
         update_state(STATES[:completed])
-        [response, *result].flatten.map(&:content).join("\n\n")
+
+        # Return only the final text response (not tool execution JSON)
+        # If tool calls were made, the last AgentResponse in result contains the final text
+        # Otherwise, return the initial response
+        if result && !result.empty?
+          # Find the last AgentResponse (final response after tool loop completes)
+          final_response = result.reverse.find { |r| r.is_a?(Messages::AgentResponse) }
+          final_response&.content || response.content
+        else
+          response.content
+        end
       end
     end
 
@@ -451,7 +461,7 @@ module ActiveIntelligence
 
       # Pass Message objects directly - client will format them
       result = @api_client.call(@messages, system_prompt, api_options)
-      AgentResponse.new(content: result[:content], tool_calls: result[:tool_calls])
+      Messages::AgentResponse.new(content: result[:content], tool_calls: result[:tool_calls])
     end
 
     def format_tools_for_api
