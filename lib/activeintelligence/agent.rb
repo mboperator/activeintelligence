@@ -252,6 +252,7 @@ module ActiveIntelligence
 
       # Reset the message status for retry
       failed_message.reset_for_retry!
+      sync_message_status_to_db(failed_message)
       @last_error = nil
       @retry_after = nil
 
@@ -260,10 +261,12 @@ module ActiveIntelligence
         begin
           response = call_streaming_api(&block)
           failed_message.mark_sent!
+          sync_message_status_to_db(failed_message)
           add_message(response)
           process_tool_calls_streaming(&block)
         rescue ApiRateLimitError => e
           failed_message.mark_failed!(e.message)
+          sync_message_status_to_db(failed_message)
           @last_error = e
           @retry_after = e.retry_after
           raise
@@ -272,6 +275,7 @@ module ActiveIntelligence
         begin
           response = call_api
           failed_message.mark_sent!
+          sync_message_status_to_db(failed_message)
           add_message(response)
           result = process_tool_calls
 
@@ -290,6 +294,7 @@ module ActiveIntelligence
           end
         rescue ApiRateLimitError => e
           failed_message.mark_failed!(e.message)
+          sync_message_status_to_db(failed_message)
           @last_error = e
           @retry_after = e.retry_after
           raise
@@ -452,12 +457,14 @@ module ActiveIntelligence
       begin
         response = call_api
         message.mark_sent!
+        sync_message_status_to_db(message)
         @last_error = nil
         @retry_after = nil
         add_message(response)
         response
       rescue ApiRateLimitError => e
         message.mark_failed!(e.message)
+        sync_message_status_to_db(message)
         @last_error = e
         @retry_after = e.retry_after
         raise
@@ -472,12 +479,14 @@ module ActiveIntelligence
       begin
         response = call_streaming_api(&block)
         message.mark_sent!
+        sync_message_status_to_db(message)
         @last_error = nil
         @retry_after = nil
         add_message(response)
         response
       rescue ApiRateLimitError => e
         message.mark_failed!(e.message)
+        sync_message_status_to_db(message)
         @last_error = e
         @retry_after = e.retry_after
         raise
@@ -905,7 +914,10 @@ module ActiveIntelligence
         ActiveIntelligence::UserMessage.create!(
           conversation: @conversation,
           content: message.content,
-          status: 'complete'
+          status: 'complete',
+          send_status: message.send_status,
+          failure_reason: message.failure_reason,
+          retry_count: message.retry_count
         )
       when Messages::AgentResponse
         ActiveIntelligence::AssistantMessage.create!(
@@ -926,6 +938,30 @@ module ActiveIntelligence
       end
     rescue StandardError => e
       raise ConfigurationError, "Failed to persist message to database: #{e.message}"
+    end
+
+    # Sync in-memory message status to database (for UserMessage send status)
+    def sync_message_status_to_db(message)
+      return unless self.class.memory == :active_record
+      return unless @conversation.respond_to?(:messages)
+      return unless message.is_a?(Messages::UserMessage)
+
+      # Find the corresponding database record by matching content and created_at
+      db_message = @conversation.messages
+        .where(type: 'ActiveIntelligence::UserMessage')
+        .order(created_at: :desc)
+        .find_by(content: message.content)
+
+      return unless db_message
+
+      db_message.update!(
+        send_status: message.send_status,
+        failure_reason: message.failure_reason,
+        retry_count: message.retry_count
+      )
+    rescue StandardError => e
+      # Log but don't raise - status sync failure shouldn't break the flow
+      Config.logger.warn "Failed to sync message status to database: #{e.message}"
     end
   end
 end

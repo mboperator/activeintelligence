@@ -15,7 +15,7 @@ ActiveIntelligence.configure do |config|
 
   # Max Tokens
   # Maximum tokens for API responses
-  # config.max_tokens = 1024
+  # config.max_tokens = 4096
 
   # Logging
   # Enable/disable logging
@@ -23,7 +23,14 @@ ActiveIntelligence.configure do |config|
 
   # Timeout Settings (in seconds)
   # config.api_timeout = 60
-  # config.streaming_timeout = 120
+  # config.streaming_timeout = 300
+
+  # Rate Limiting & Retry Configuration
+  # Automatic retry with exponential backoff for rate limit (429) and server errors
+  # config.retry_max_retries = 3        # Maximum retry attempts (set to 0 to disable)
+  # config.retry_base_delay = 1.0       # Initial delay in seconds
+  # config.retry_max_delay = 60.0       # Maximum delay cap in seconds
+  # config.retry_backoff_factor = 2.0   # Exponential backoff multiplier
 end
 
 # Validate API key on initialization in production
