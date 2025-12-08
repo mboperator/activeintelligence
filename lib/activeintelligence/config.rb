@@ -11,6 +11,13 @@ module ActiveIntelligence
         max_tokens: 4096,
         enable_prompt_caching: true
       },
+      retry: {
+        max_retries: 3,           # Maximum number of retry attempts
+        base_delay: 1.0,          # Initial delay in seconds
+        max_delay: 60.0,          # Maximum delay in seconds
+        backoff_factor: 2.0,      # Exponential backoff multiplier
+        retryable_errors: [429, 500, 502, 503, 504]  # HTTP status codes to retry
+      },
       logger: defined?(Rails) ? Rails.logger : Logger.new(STDOUT)
     }
 

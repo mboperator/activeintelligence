@@ -2,7 +2,7 @@
 require 'net/http'
 require 'json'
 require 'logger'
-require 'pry'
+
 module ActiveIntelligence
   module ApiClients
     class BaseClient

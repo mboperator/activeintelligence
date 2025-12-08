@@ -1,5 +1,5 @@
 # lib/active_intelligence/api_clients/claude_client.rb
-require 'pry'
+
 module ActiveIntelligence
   module ApiClients
     class ClaudeClient < BaseClient
@@ -19,12 +19,18 @@ module ActiveIntelligence
         formatted_messages = format_messages(messages)
         params = build_request_params(formatted_messages, system_prompt, options)
 
-        uri = URI(ANTHROPIC_API_URL)
-        http = setup_http_client(uri)
-        request = build_request(uri, params)
+        with_retry(options) do
+          uri = URI(ANTHROPIC_API_URL)
+          http = setup_http_client(uri)
+          request = build_request(uri, params)
 
-        response = http.request(request)
-        process_response(response)
+          response = http.request(request)
+          handle_response_status(response)
+          process_response(response)
+        end
+      rescue ApiRateLimitError
+        # Re-raise rate limit errors so caller can handle them
+        raise
       rescue => e
         handle_error(e)
       end
@@ -33,20 +39,21 @@ module ActiveIntelligence
         formatted_messages = format_messages(messages)
         params = build_request_params(formatted_messages, system_prompt, options.merge(stream: true))
 
-        uri = URI(ANTHROPIC_API_URL)
-        http = setup_http_client(uri)
-        request = build_request(uri, params, stream: true)
+        with_retry(options) do
+          uri = URI(ANTHROPIC_API_URL)
+          http = setup_http_client(uri)
+          request = build_request(uri, params, stream: true)
 
-        http.request(request) do |response|
-          if response.code != "200"
-            error_msg = handle_error(StandardError.new("#{response.code} - #{response.body}"))
-            yield error_msg if block_given?
-            return error_msg
+          result = nil
+          http.request(request) do |response|
+            handle_response_status(response)
+            result = process_streaming_response(response, &block)
           end
-
-          result = process_streaming_response(response, &block)
-          return result
+          result
         end
+      rescue ApiRateLimitError
+        # Re-raise rate limit errors so caller can handle them
+        raise
       rescue => e
         error_msg = handle_error(e)
         yield error_msg if block_given?
@@ -396,6 +403,116 @@ module ActiveIntelligence
           cache_read_tokens: usage_hash["cache_read_input_tokens"] || 0,
           cache_creation_tokens: usage_hash["cache_creation_input_tokens"] || 0
         )
+      end
+
+      # Retry wrapper with exponential backoff
+      def with_retry(options = {})
+        retry_config = Config.settings[:retry]
+        max_retries = options[:max_retries] || retry_config[:max_retries]
+        base_delay = options[:base_delay] || retry_config[:base_delay]
+        max_delay = options[:max_delay] || retry_config[:max_delay]
+        backoff_factor = options[:backoff_factor] || retry_config[:backoff_factor]
+
+        # Allow disabling retries
+        return yield if options[:retry] == false || max_retries == 0
+
+        attempt = 0
+        last_error = nil
+
+        loop do
+          begin
+            return yield
+          rescue ApiRateLimitError => e
+            last_error = e
+            attempt += 1
+
+            if attempt > max_retries
+              logger.error "Rate limit exceeded after #{max_retries} retries"
+              raise
+            end
+
+            # Use retry-after header if available, otherwise calculate backoff
+            delay = if e.retry_after?
+                      e.retry_after
+                    else
+                      calculate_delay(attempt, base_delay, max_delay, backoff_factor)
+                    end
+
+            logger.warn "Rate limited (attempt #{attempt}/#{max_retries}). Retrying in #{delay}s..."
+            sleep(delay)
+          end
+        end
+      end
+
+      # Check response status and raise appropriate errors
+      def handle_response_status(response)
+        case response.code
+        when "200"
+          # Success - do nothing
+        when "429"
+          # Rate limit exceeded
+          rate_limit_info = parse_rate_limit_headers(response)
+          raise ApiRateLimitError.new(
+            "Rate limit exceeded: #{response.body}",
+            retry_after: rate_limit_info[:retry_after],
+            rate_limit_type: rate_limit_info[:type],
+            request_id: rate_limit_info[:request_id],
+            headers: rate_limit_info[:headers]
+          )
+        when "500", "502", "503", "504"
+          # Server errors - may be retryable
+          raise ApiRateLimitError.new(
+            "Server error (#{response.code}): #{response.body}",
+            retry_after: nil,
+            rate_limit_type: :server_error
+          )
+        when "401"
+          raise AuthenticationError.new("Invalid API key", status: :unauthorized)
+        else
+          raise ApiError.new("API error (#{response.code}): #{response.body}")
+        end
+      end
+
+      # Parse Anthropic rate limit headers
+      def parse_rate_limit_headers(response)
+        headers = {}
+
+        # Anthropic rate limit headers
+        # https://docs.anthropic.com/en/api/rate-limits
+        headers[:requests_limit] = response['anthropic-ratelimit-requests-limit']&.to_i
+        headers[:requests_remaining] = response['anthropic-ratelimit-requests-remaining']&.to_i
+        headers[:requests_reset] = response['anthropic-ratelimit-requests-reset']
+        headers[:tokens_limit] = response['anthropic-ratelimit-tokens-limit']&.to_i
+        headers[:tokens_remaining] = response['anthropic-ratelimit-tokens-remaining']&.to_i
+        headers[:tokens_reset] = response['anthropic-ratelimit-tokens-reset']
+
+        # Standard retry-after header (in seconds)
+        retry_after = response['retry-after']&.to_f
+
+        # Determine rate limit type based on headers
+        rate_limit_type = if headers[:tokens_remaining] == 0
+                           :tokens
+                         elsif headers[:requests_remaining] == 0
+                           :requests
+                         else
+                           :unknown
+                         end
+
+        {
+          retry_after: retry_after,
+          type: rate_limit_type,
+          request_id: response['request-id'],
+          headers: headers
+        }
+      end
+
+      # Calculate exponential backoff delay
+      def calculate_delay(attempt, base_delay, max_delay, backoff_factor)
+        # Exponential backoff with jitter
+        delay = base_delay * (backoff_factor ** (attempt - 1))
+        # Add jitter (0-25% of delay)
+        jitter = delay * rand * 0.25
+        [delay + jitter, max_delay].min
       end
     end
   end

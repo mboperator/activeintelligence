@@ -14,8 +14,59 @@ module ActiveIntelligence
     end
 
     class UserMessage < Message
+      SEND_STATUSES = {
+        pending: 'pending',     # Not yet sent to API
+        sent: 'sent',           # Successfully sent
+        failed: 'failed'        # Failed to send (e.g., rate limit)
+      }.freeze
+
+      attr_reader :send_status, :failure_reason, :retry_count
+
+      def initialize(content:, created_at: Time.now)
+        super
+        @send_status = SEND_STATUSES[:pending]
+        @failure_reason = nil
+        @retry_count = 0
+      end
+
       def role
         "user"
+      end
+
+      # Mark message as successfully sent
+      def mark_sent!
+        @send_status = SEND_STATUSES[:sent]
+        @failure_reason = nil
+      end
+
+      # Mark message as failed with reason
+      def mark_failed!(reason = nil)
+        @send_status = SEND_STATUSES[:failed]
+        @failure_reason = reason
+        @retry_count += 1
+      end
+
+      # Reset to pending for retry
+      def reset_for_retry!
+        @send_status = SEND_STATUSES[:pending]
+      end
+
+      # Status checks
+      def pending?
+        @send_status == SEND_STATUSES[:pending]
+      end
+
+      def sent?
+        @send_status == SEND_STATUSES[:sent]
+      end
+
+      def failed?
+        @send_status == SEND_STATUSES[:failed]
+      end
+
+      # Check if message can be retried
+      def retriable?
+        failed? && @retry_count < 5  # Max 5 manual retries
       end
     end
 
