@@ -298,6 +298,180 @@ end
 - `default`: Default value
 - `enum`: Array of allowed values
 
+### Observability Hooks
+
+ActiveIntelligence provides a comprehensive set of lifecycle hooks for monitoring, debugging, and integrating with external observability systems. Hooks are defined at the class level and receive typed payload objects.
+
+#### Available Hooks
+
+| Hook | Payload | Description |
+|------|---------|-------------|
+| `on_session_start` | `Session` | Called when an agent session begins |
+| `on_session_end` | `Session` | Called when the session ends |
+| `on_turn_start` | `Turn` | Called when a user message turn begins |
+| `on_turn_end` | `Turn` | Called when the turn completes |
+| `on_response_start` | `Response` | Called when an LLM response starts |
+| `on_response_end` | `Response` | Called when an LLM response completes |
+| `on_response_chunk` | `Chunk` | Called for each streaming chunk (streaming only) |
+| `on_thinking_start` | `Thinking` | Called when Claude's extended thinking starts |
+| `on_thinking_end` | `Thinking` | Called when Claude's extended thinking ends |
+| `on_tool_start` | `ToolExecution` | Called when a tool begins execution |
+| `on_tool_end` | `ToolExecution` | Called when a tool completes successfully |
+| `on_tool_error` | `ToolExecution` | Called when a tool encounters an error |
+| `on_message_added` | `Message` | Called when a message is added to history |
+| `on_iteration` | `Iteration` | Called on each tool processing iteration |
+| `on_error` | `ErrorContext` | Called when the agent encounters an error |
+| `on_stop` | `StopEvent` | Called when the agent stops (with reason) |
+
+#### Basic Usage
+
+```ruby
+class MyAgent < ActiveIntelligence::Agent
+  model :claude
+  memory :in_memory
+  identity "You are a helpful assistant"
+
+  # Using blocks
+  on_session_start { |session| puts "Session #{session.id} started" }
+  on_turn_end { |turn| puts "Turn completed in #{turn.duration}s" }
+  on_tool_start { |tool| puts "Executing #{tool.name}..." }
+  on_error { |error_ctx| Logger.error(error_ctx.message) }
+
+  # Using method references
+  on_response_end :log_response
+
+  private
+
+  def log_response(response)
+    puts "Response: #{response.content&.slice(0, 100)}..."
+    puts "Tokens: #{response.usage.total_tokens}"
+  end
+end
+```
+
+#### Real-World Example: Debug Panel Broadcasting
+
+This example from a Rails application broadcasts all agent events to a debug panel via ActionCable:
+
+```ruby
+class BibleStudyAgent < ActiveIntelligence::Agent
+  model :claude
+  memory :active_record
+
+  # Broadcast all events to debug panel
+  on_session_start { |session| broadcast_hook('on_session_start', session.to_h) }
+  on_session_end { |session| broadcast_hook('on_session_end', session.to_h) }
+  on_turn_start { |turn| broadcast_hook('on_turn_start', turn.to_h) }
+  on_turn_end { |turn| broadcast_hook('on_turn_end', turn.to_h) }
+  on_response_start { |response| broadcast_hook('on_response_start', response.to_h) }
+  on_response_end { |response| broadcast_hook('on_response_end', response.to_h) }
+  on_response_chunk { |chunk| broadcast_hook('on_response_chunk', chunk.to_h) }
+  on_thinking_start { |thinking| broadcast_hook('on_thinking_start', thinking.to_h) }
+  on_thinking_end { |thinking| broadcast_hook('on_thinking_end', thinking.to_h) }
+  on_tool_start { |tool| broadcast_hook('on_tool_start', tool.to_h) }
+  on_tool_end { |tool| broadcast_hook('on_tool_end', tool.to_h) }
+  on_tool_error { |tool| broadcast_hook('on_tool_error', tool.to_h) }
+  on_message_added { |message| broadcast_hook('on_message_added', { type: message.class.name }) }
+  on_iteration { |iteration| broadcast_hook('on_iteration', iteration.to_h) }
+  on_error { |error_ctx| broadcast_hook('on_error', error_ctx.to_h) }
+  on_stop { |stop| broadcast_hook('on_stop', stop.to_h) }
+
+  private
+
+  def broadcast_hook(hook_name, payload)
+    return unless @conversation
+    DebugChannel.broadcast_to(@conversation, {
+      hook: hook_name,
+      payload: payload,
+      timestamp: Time.now.iso8601
+    })
+  rescue => e
+    Rails.logger.error "Failed to broadcast hook #{hook_name}: #{e.message}"
+  end
+end
+```
+
+#### Payload Objects
+
+All payload objects provide a `to_h` method for easy serialization.
+
+**Session**
+```ruby
+{
+  id: "uuid",
+  agent_class: "MyAgent",
+  created_at: Time,
+  ended_at: Time,
+  duration: Float,           # seconds
+  total_turns: Integer,
+  total_input_tokens: Integer,
+  total_output_tokens: Integer
+}
+```
+
+**Turn**
+```ruby
+{
+  id: "uuid",
+  session_id: "uuid",
+  user_message: String,
+  started_at: Time,
+  ended_at: Time,
+  duration: Float,
+  usage: { input_tokens: Integer, output_tokens: Integer, ... },
+  iteration_count: Integer   # tool call iterations
+}
+```
+
+**Response**
+```ruby
+{
+  id: "uuid",
+  turn_id: "uuid",
+  is_streaming: Boolean,
+  started_at: Time,
+  ended_at: Time,
+  duration: Float,
+  content: String,
+  usage: { ... },
+  stop_reason: String,
+  model: String,
+  tool_calls: Array
+}
+```
+
+**ToolExecution**
+```ruby
+{
+  name: String,
+  tool_class: String,
+  input: Hash,
+  tool_use_id: String,
+  started_at: Time,
+  ended_at: Time,
+  duration: Float,
+  result: Hash,
+  error: Exception | nil
+}
+```
+
+**StopEvent**
+```ruby
+{
+  reason: Symbol,   # :complete, :max_turns, :error, :frontend_pause, :user_stop
+  details: Hash
+}
+```
+
+#### Use Cases
+
+- **Logging & Monitoring**: Log all agent activity to external systems
+- **Cost Tracking**: Track token usage per session/turn for billing
+- **Debugging**: Build real-time debug panels showing agent internals
+- **Analytics**: Collect metrics on tool usage, response times, error rates
+- **Audit Trails**: Record all interactions for compliance requirements
+- **Performance Monitoring**: Track response latency and iteration counts
+
 ## Configuration
 
 ```ruby
