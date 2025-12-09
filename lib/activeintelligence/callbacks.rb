@@ -303,7 +303,8 @@ module ActiveIntelligence
       user_stop: :user_stop,
       error: :error,
       complete: :complete,
-      frontend_pause: :frontend_pause
+      frontend_pause: :frontend_pause,
+      rate_limit: :rate_limit  # Added for rate limit exhaustion
     }.freeze
 
     def initialize(reason:, details: {})
@@ -315,6 +316,64 @@ module ActiveIntelligence
       {
         reason: @reason,
         details: @details
+      }
+    end
+  end
+
+  # Rate limit event - fired when API returns 429 or similar
+  class RateLimitEvent
+    attr_reader :error, :attempt, :max_retries, :retry_after, :rate_limit_type,
+                :request_id, :will_retry, :timestamp
+
+    def initialize(error:, attempt:, max_retries:, will_retry:)
+      @error = error
+      @attempt = attempt
+      @max_retries = max_retries
+      @retry_after = error.retry_after
+      @rate_limit_type = error.rate_limit_type
+      @request_id = error.request_id
+      @will_retry = will_retry
+      @timestamp = Time.now
+    end
+
+    def to_h
+      {
+        attempt: @attempt,
+        max_retries: @max_retries,
+        retry_after: @retry_after,
+        rate_limit_type: @rate_limit_type,
+        request_id: @request_id,
+        will_retry: @will_retry,
+        message: @error.message,
+        timestamp: @timestamp
+      }
+    end
+  end
+
+  # Retry event - fired before each retry attempt
+  class RetryEvent
+    attr_reader :attempt, :max_retries, :delay, :reason, :timestamp
+
+    def initialize(attempt:, max_retries:, delay:, reason:)
+      @attempt = attempt
+      @max_retries = max_retries
+      @delay = delay
+      @reason = reason
+      @timestamp = Time.now
+    end
+
+    def remaining_retries
+      @max_retries - @attempt
+    end
+
+    def to_h
+      {
+        attempt: @attempt,
+        max_retries: @max_retries,
+        remaining_retries: remaining_retries,
+        delay: @delay,
+        reason: @reason,
+        timestamp: @timestamp
       }
     end
   end
@@ -343,6 +402,8 @@ module ActiveIntelligence
         on_iteration
         on_error
         on_stop
+        on_rate_limit
+        on_retry
       ].freeze
 
       def callbacks

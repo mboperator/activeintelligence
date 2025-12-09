@@ -455,7 +455,7 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
 
         result = client.call(messages, system_prompt)
 
-        expect(result).to include("401")
+        expect(result).to include("Invalid API key")
       end
 
       it 'handles network errors' do
@@ -634,9 +634,10 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
       stub_request(:post, "https://api.anthropic.com/v1/messages")
         .to_return(status: 500, body: "Server error")
 
-      result = client.call_streaming(messages, system_prompt) { }
-
-      expect(result).to include("500")
+      # Server errors are retried (with exponential backoff) and then re-raised
+      expect {
+        client.call_streaming(messages, system_prompt, retry: false) { }
+      }.to raise_error(ActiveIntelligence::ApiRateLimitError, /Server error/)
     end
   end
 end

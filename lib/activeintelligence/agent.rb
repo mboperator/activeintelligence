@@ -46,13 +46,16 @@ module ActiveIntelligence
     end
 
     # Instance attributes
-    attr_reader :objective, :messages, :options, :tools, :conversation, :state, :session, :current_turn
+    attr_reader :objective, :messages, :options, :tools, :conversation, :state, :session, :current_turn,
+                :last_error, :retry_after
 
     def initialize(objective: nil, options: {}, tools: nil, conversation: nil)
       @objective = objective
       @options = options
       @tools = tools || self.class.tools.map(&:new)
       @conversation = conversation
+      @last_error = nil
+      @retry_after = nil
 
       # Initialize session for observability
       @session = Session.new(agent_class: self.class.name)
@@ -217,6 +220,100 @@ module ActiveIntelligence
       @state == STATES[:awaiting_tool_results]
     end
 
+    # Check if the last message failed to send
+    def last_message_failed?
+      last_user_message&.failed?
+    end
+
+    # Get the last user message
+    def last_user_message
+      @messages.reverse.find { |m| m.is_a?(Messages::UserMessage) }
+    end
+
+    # Check if the last failed message can be retried
+    def can_retry?
+      last_user_message&.retriable?
+    end
+
+    # Retry sending the last failed message
+    # @param stream [Boolean] Whether to use streaming mode
+    # @param block [Proc] Block for streaming responses
+    # @return [String] The response content or raises ApiRateLimitError
+    def retry_last_message(stream: false, **options, &block)
+      failed_message = last_user_message
+
+      unless failed_message&.failed?
+        raise Error, "No failed message to retry"
+      end
+
+      unless failed_message.retriable?
+        raise Error, "Message has exceeded maximum retry attempts (#{failed_message.retry_count})"
+      end
+
+      # Reset the message status for retry
+      failed_message.reset_for_retry!
+      sync_message_status_to_db(failed_message)
+      @last_error = nil
+      @retry_after = nil
+
+      # Re-attempt the API call (message is already in history)
+      if stream && block_given?
+        begin
+          response = call_streaming_api(&block)
+          failed_message.mark_sent!
+          sync_message_status_to_db(failed_message)
+          add_message(response)
+          process_tool_calls_streaming(&block)
+        rescue ApiRateLimitError => e
+          failed_message.mark_failed!(e.message)
+          sync_message_status_to_db(failed_message)
+          @last_error = e
+          @retry_after = e.retry_after
+          raise
+        end
+      else
+        begin
+          response = call_api
+          failed_message.mark_sent!
+          sync_message_status_to_db(failed_message)
+          add_message(response)
+          result = process_tool_calls
+
+          # Check if we paused for frontend tools
+          if paused_for_frontend?
+            return build_pending_tools_response
+          end
+
+          update_state(STATES[:completed])
+
+          if result && !result.empty?
+            final_response = result.reverse.find { |r| r.is_a?(Messages::AgentResponse) }
+            final_response&.content || response.content
+          else
+            response.content
+          end
+        rescue ApiRateLimitError => e
+          failed_message.mark_failed!(e.message)
+          sync_message_status_to_db(failed_message)
+          @last_error = e
+          @retry_after = e.retry_after
+          raise
+        end
+      end
+    end
+
+    # Get rate limit error details for the last failure
+    def rate_limit_info
+      return nil unless @last_error.is_a?(ApiRateLimitError)
+
+      {
+        retry_after: @last_error.retry_after,
+        rate_limit_type: @last_error.rate_limit_type,
+        request_id: @last_error.request_id,
+        message: @last_error.message
+      }
+    end
+
     private
 
     # Check if there are any pending tool responses
@@ -357,10 +454,21 @@ module ActiveIntelligence
       message = Messages::UserMessage.new(content:)
       add_message(message)
 
-      response = call_api
-      add_message(response)
-
-      response
+      begin
+        response = call_api
+        message.mark_sent!
+        sync_message_status_to_db(message)
+        @last_error = nil
+        @retry_after = nil
+        add_message(response)
+        response
+      rescue ApiRateLimitError => e
+        message.mark_failed!(e.message)
+        sync_message_status_to_db(message)
+        @last_error = e
+        @retry_after = e.retry_after
+        raise
+      end
     end
 
     # Handle streaming message requests
@@ -368,10 +476,21 @@ module ActiveIntelligence
       message = Messages::UserMessage.new(content:)
       add_message(message)
 
-      response = call_streaming_api(&block)
-      add_message(response)
-      
-      response
+      begin
+        response = call_streaming_api(&block)
+        message.mark_sent!
+        sync_message_status_to_db(message)
+        @last_error = nil
+        @retry_after = nil
+        add_message(response)
+        response
+      rescue ApiRateLimitError => e
+        message.mark_failed!(e.message)
+        sync_message_status_to_db(message)
+        @last_error = e
+        @retry_after = e.retry_after
+        raise
+      end
     end
 
     def process_tool_calls_streaming(&block)
@@ -516,10 +635,12 @@ module ActiveIntelligence
       system_prompt = build_system_prompt
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
-      # Merge options with default caching setting
+      # Merge options with default caching setting and rate limit callbacks
       api_options = options.merge(
         tools: api_tools,
-        enable_prompt_caching: options[:enable_prompt_caching] != false
+        enable_prompt_caching: options[:enable_prompt_caching] != false,
+        on_rate_limit: build_rate_limit_callback,
+        on_retry: build_retry_callback
       )
 
       # Create response tracker
@@ -584,10 +705,12 @@ module ActiveIntelligence
       system_prompt = build_system_prompt
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
-      # Merge options with default caching setting
+      # Merge options with default caching setting and rate limit callbacks
       api_options = options.merge(
         tools: api_tools,
-        enable_prompt_caching: options[:enable_prompt_caching] != false
+        enable_prompt_caching: options[:enable_prompt_caching] != false,
+        on_rate_limit: build_rate_limit_callback,
+        on_retry: build_retry_callback
       )
 
       # Create response tracker
@@ -795,7 +918,10 @@ module ActiveIntelligence
         ActiveIntelligence::UserMessage.create!(
           conversation: @conversation,
           content: message.content,
-          status: 'complete'
+          status: 'complete',
+          send_status: message.send_status,
+          failure_reason: message.failure_reason,
+          retry_count: message.retry_count
         )
       when Messages::AgentResponse
         ActiveIntelligence::AssistantMessage.create!(
@@ -816,6 +942,69 @@ module ActiveIntelligence
       end
     rescue StandardError => e
       raise ConfigurationError, "Failed to persist message to database: #{e.message}"
+    end
+
+    # Sync in-memory message status to database (for UserMessage send status)
+    def sync_message_status_to_db(message)
+      return unless self.class.memory == :active_record
+      return unless @conversation.respond_to?(:messages)
+      return unless message.is_a?(Messages::UserMessage)
+
+      # Find the corresponding database record by matching content and created_at
+      db_message = @conversation.messages
+        .where(type: 'ActiveIntelligence::UserMessage')
+        .order(created_at: :desc)
+        .find_by(content: message.content)
+
+      return unless db_message
+
+      db_message.update!(
+        send_status: message.send_status,
+        failure_reason: message.failure_reason,
+        retry_count: message.retry_count
+      )
+    rescue StandardError => e
+      # Log but don't raise - status sync failure shouldn't break the flow
+      Config.logger.warn "Failed to sync message status to database: #{e.message}"
+    end
+
+    # Build callback lambda for rate limit events
+    def build_rate_limit_callback
+      ->(error, attempt, max_retries, will_retry) {
+        event = RateLimitEvent.new(
+          error: error,
+          attempt: attempt,
+          max_retries: max_retries,
+          will_retry: will_retry
+        )
+        trigger_callback(:on_rate_limit, event)
+
+        # If not retrying, also fire stop event
+        unless will_retry
+          trigger_callback(:on_stop, StopEvent.new(
+            reason: :rate_limit,
+            details: {
+              attempt: attempt,
+              max_retries: max_retries,
+              rate_limit_type: error.rate_limit_type,
+              retry_after: error.retry_after
+            }
+          ))
+        end
+      }
+    end
+
+    # Build callback lambda for retry events
+    def build_retry_callback
+      ->(attempt, max_retries, delay, reason) {
+        event = RetryEvent.new(
+          attempt: attempt,
+          max_retries: max_retries,
+          delay: delay,
+          reason: reason
+        )
+        trigger_callback(:on_retry, event)
+      }
     end
   end
 end
