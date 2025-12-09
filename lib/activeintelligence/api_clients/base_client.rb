@@ -24,7 +24,6 @@ module ActiveIntelligence
 
       def handle_error(error, prefix = "API Error")
         message = "#{prefix}: #{error.message}"
-        binding.pry
         logger.error(message)
         message
       end

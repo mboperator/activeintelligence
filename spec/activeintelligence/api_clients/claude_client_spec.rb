@@ -551,8 +551,11 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
         chunks << chunk
       end
 
-      # Chunks should be SSE-formatted
-      expect(chunks).to eq(["data: Hello\n\n", "data:  there\n\n"])
+      # Chunks are now JSON-wrapped with chunk_index for observability
+      expect(chunks.size).to eq(2)
+      expect(chunks[0]).to include('"type":"content_delta"')
+      expect(chunks[0]).to include('"delta":"Hello"')
+      expect(chunks[1]).to include('"delta":" there"')
       expect(result[:content]).to eq("Hello there")
       expect(result[:stop_reason]).to eq("end_turn")
     end
@@ -594,16 +597,18 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
       chunks = []
       result = client.call_streaming(messages, system_prompt) { |chunk| chunks << chunk }
 
-      # Chunks should be SSE-formatted
-      expect(chunks).to eq(["data: Let me search\n\n"])
+      # Chunks are now JSON-wrapped with observability data
+      expect(chunks.size).to eq(1)
+      expect(chunks[0]).to include('"delta":"Let me search"')
       expect(result[:content]).to eq("Let me search")
       expect(result[:tool_calls].length).to eq(1)
     end
 
-    it 'handles thinking blocks without yielding them' do
+    it 'handles thinking blocks and yields thinking events' do
       streaming_response = [
         "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
         "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Hmm...\"}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
         "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
         "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Answer\"}}\n\n",
         "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
@@ -615,9 +620,14 @@ RSpec.describe ActiveIntelligence::ApiClients::ClaudeClient do
       chunks = []
       result = client.call_streaming(messages, system_prompt) { |chunk| chunks << chunk }
 
-      # Should not yield thinking content to user, chunks should be SSE-formatted
-      expect(chunks).to eq(["data: Answer\n\n"])
+      # Thinking events are now yielded for observability (thinking_start, thinking_end)
+      # Plus the text content chunk
+      expect(chunks.size).to eq(3)
+      expect(chunks[0]).to include('"type":"thinking_start"')
+      expect(chunks[1]).to include('"type":"thinking_end"')
+      expect(chunks[2]).to include('"delta":"Answer"')
       expect(result[:content]).to eq("Answer")
+      expect(result[:thinking]).to eq("Hmm...")
     end
 
     it 'handles errors during streaming' do

@@ -1,6 +1,8 @@
 # lib/active_intelligence/agent.rb
 module ActiveIntelligence
   class Agent
+    include Callbacks
+
     # Agent execution states
     STATES = {
       idle: 'idle',
@@ -10,6 +12,7 @@ module ActiveIntelligence
 
     class << self
       def inherited(subclass)
+        super  # Important: call super first for Callbacks inheritance
         subclass.instance_variable_set(:@model_name, nil)
         subclass.instance_variable_set(:@memory_type, nil)
         subclass.instance_variable_set(:@identity, nil)
@@ -43,13 +46,18 @@ module ActiveIntelligence
     end
 
     # Instance attributes
-    attr_reader :objective, :messages, :options, :tools, :conversation, :state
+    attr_reader :objective, :messages, :options, :tools, :conversation, :state, :session, :current_turn
 
     def initialize(objective: nil, options: {}, tools: nil, conversation: nil)
       @objective = objective
       @options = options
       @tools = tools || self.class.tools.map(&:new)
       @conversation = conversation
+
+      # Initialize session for observability
+      @session = Session.new(agent_class: self.class.name)
+      @current_turn = nil
+      @current_response = nil
 
       # Initialize messages based on memory strategy
       if self.class.memory == :active_record
@@ -62,6 +70,13 @@ module ActiveIntelligence
       end
 
       setup_api_client
+      trigger_callback(:on_session_start, @session)
+    end
+
+    # Explicitly end the session (for observability)
+    def end_session
+      @session.end!
+      trigger_callback(:on_session_end, @session)
     end
 
     # Main method to send messages that delegates to appropriate handler
@@ -69,31 +84,43 @@ module ActiveIntelligence
       # Save agent class name to conversation for reconstruction
       persist_agent_class if @conversation
 
-      if stream && block_given?
-        send_message_streaming(message, options, &block)
-        process_tool_calls_streaming(&block)
-      else
-        response = send_message_static(message, options)
-        result = process_tool_calls
+      # Start a new turn
+      @current_turn = Turn.new(user_message: message, session_id: @session.id)
+      @session.total_turns += 1
+      trigger_callback(:on_turn_start, @current_turn)
 
-        # Check if we paused for frontend tools
-        if paused_for_frontend?
-          return build_pending_tools_response
-        end
-
-        # Normal completion
-        update_state(STATES[:completed])
-
-        # Return only the final text response (not tool execution JSON)
-        # If tool calls were made, the last AgentResponse in result contains the final text
-        # Otherwise, return the initial response
-        if result && !result.empty?
-          # Find the last AgentResponse (final response after tool loop completes)
-          final_response = result.reverse.find { |r| r.is_a?(Messages::AgentResponse) }
-          final_response&.content || response.content
+      begin
+        if stream && block_given?
+          send_message_streaming(message, options, &block)
+          process_tool_calls_streaming(&block)
         else
-          response.content
+          response = send_message_static(message, options)
+          result = process_tool_calls
+
+          # Check if we paused for frontend tools
+          if paused_for_frontend?
+            trigger_callback(:on_stop, StopEvent.new(reason: :frontend_pause, details: { pending_tools: pending_tools.map(&:tool_name) }))
+            return build_pending_tools_response
+          end
+
+          # Normal completion
+          update_state(STATES[:completed])
+          end_current_turn
+
+          # Return only the final text response (not tool execution JSON)
+          # If tool calls were made, the last AgentResponse in result contains the final text
+          # Otherwise, return the initial response
+          if result && !result.empty?
+            # Find the last AgentResponse (final response after tool loop completes)
+            final_response = result.reverse.find { |r| r.is_a?(Messages::AgentResponse) }
+            final_response&.content || response.content
+          else
+            response.content
+          end
         end
+      rescue StandardError => e
+        handle_agent_error(e)
+        raise
       end
     end
 
@@ -223,6 +250,31 @@ module ActiveIntelligence
         persist_message_to_db(message)
       end
       @messages << message
+      trigger_callback(:on_message_added, message)
+    end
+
+    # Helper to end the current turn with proper callbacks
+    def end_current_turn
+      return unless @current_turn
+      @current_turn.end!
+      trigger_callback(:on_turn_end, @current_turn)
+      trigger_callback(:on_stop, StopEvent.new(reason: :complete))
+      @current_turn = nil
+    end
+
+    # Handle agent-level errors with proper callbacks
+    def handle_agent_error(error)
+      context = ErrorContext.new(
+        error: error,
+        context: {
+          turn_id: @current_turn&.id,
+          session_id: @session.id,
+          last_messages: @messages.last(3).map { |m| { type: m.class.name, content: m.content&.to_s&.slice(0, 100) } },
+          iteration_count: @current_turn&.iteration_count
+        }
+      )
+      trigger_callback(:on_error, context)
+      trigger_callback(:on_stop, StopEvent.new(reason: :error, details: { error_class: error.class.name, message: error.message }))
     end
 
     def process_tool_calls
@@ -233,11 +285,22 @@ module ActiveIntelligence
       # Keep processing tool calls until Claude responds with text only
       while !@messages.last.tool_calls.empty?
         iterations += 1
+        @current_turn.iteration_count = iterations if @current_turn
+
         if iterations > max_iterations
+          trigger_callback(:on_stop, StopEvent.new(reason: :max_turns, details: { iterations: iterations }))
           raise Error, "Maximum tool call iterations (#{max_iterations}) exceeded. Possible infinite loop."
         end
 
         tool_calls = @messages.last.tool_calls
+
+        # Fire iteration callback
+        iteration = Iteration.new(
+          number: iterations,
+          tool_calls_count: tool_calls.size,
+          turn_id: @current_turn&.id
+        )
+        trigger_callback(:on_iteration, iteration)
 
         # Create pending ToolResponse messages for ALL tool calls upfront
         tool_calls.each do |tool_call|
@@ -262,8 +325,8 @@ module ActiveIntelligence
           tool_response = find_pending_tool_response(tool_call[:id])
           next unless tool_response  # Safety check
 
-          # Execute the tool
-          result = execute_tool_call(tool_call[:name], tool_call[:parameters])
+          # Execute the tool with callbacks
+          result = execute_tool_call_with_callbacks(tool_call[:name], tool_call[:parameters], tool_call[:id])
 
           # Update to complete
           tool_response.complete!(result)
@@ -318,11 +381,22 @@ module ActiveIntelligence
       # Keep processing tool calls until Claude responds with text only
       while !@messages.last.tool_calls.empty?
         iterations += 1
+        @current_turn.iteration_count = iterations if @current_turn
+
         if iterations > max_iterations
+          trigger_callback(:on_stop, StopEvent.new(reason: :max_turns, details: { iterations: iterations }))
           raise Error, "Maximum tool call iterations (#{max_iterations}) exceeded. Possible infinite loop."
         end
 
         tool_calls = @messages.last.tool_calls
+
+        # Fire iteration callback
+        iteration = Iteration.new(
+          number: iterations,
+          tool_calls_count: tool_calls.size,
+          turn_id: @current_turn&.id
+        )
+        trigger_callback(:on_iteration, iteration)
 
         # Create pending ToolResponse messages for ALL tool calls upfront
         tool_calls.each do |tool_call|
@@ -346,8 +420,8 @@ module ActiveIntelligence
           tool_response = find_pending_tool_response(tool_call[:id])
           next unless tool_response  # Safety check
 
-          # Execute the tool
-          result = execute_tool_call(tool_call[:name], tool_call[:parameters])
+          # Execute the tool with callbacks
+          result = execute_tool_call_with_callbacks(tool_call[:name], tool_call[:parameters], tool_call[:id])
 
           # Update to complete
           tool_response.complete!(result)
@@ -370,6 +444,7 @@ module ActiveIntelligence
         # Check if we have pending frontend tools
         if has_pending_tools?
           update_state(STATES[:awaiting_tool_results])
+          trigger_callback(:on_stop, StopEvent.new(reason: :frontend_pause, details: { pending_tools: pending_tools.map(&:tool_name) }))
 
           # Build pending tool data with DB message IDs if using ActiveRecord
           pending_tool_data = pending_tools.map do |tr|
@@ -404,6 +479,9 @@ module ActiveIntelligence
         response = call_streaming_api(&block)
         add_message(response)
       end
+
+      # Streaming complete - end the turn
+      end_current_turn
     end
 
     def setup_api_client
@@ -444,9 +522,62 @@ module ActiveIntelligence
         enable_prompt_caching: options[:enable_prompt_caching] != false
       )
 
+      # Create response tracker
+      @current_response = Response.new(turn_id: @current_turn&.id, is_streaming: true)
+      trigger_callback(:on_response_start, @current_response)
+
+      chunk_index = 0
+
+      # Wrap the block to capture chunks for callbacks
+      wrapped_block = proc do |chunk_data|
+        # Parse the chunk to extract content for callback
+        if chunk_data.start_with?("data: ")
+          json_str = chunk_data[6..-3]  # Remove "data: " prefix and "\n\n" suffix
+          parsed = JSON.parse(json_str, symbolize_names: true) rescue nil
+          if parsed && parsed[:type] == "content_delta"
+            chunk = Chunk.new(
+              content: parsed[:delta],
+              index: chunk_index,
+              response_id: @current_response.id
+            )
+            chunk_index += 1
+            trigger_callback(:on_response_chunk, chunk)
+          elsif parsed && parsed[:type] == "thinking_start"
+            @current_thinking = Thinking.new(response_id: @current_response.id)
+            trigger_callback(:on_thinking_start, @current_thinking)
+          elsif parsed && parsed[:type] == "thinking_end"
+            if @current_thinking
+              @current_thinking.content = parsed[:content]
+              @current_thinking.end!
+              trigger_callback(:on_thinking_end, @current_thinking)
+              @current_thinking = nil
+            end
+          end
+        end
+        block.call(chunk_data) if block
+      end
+
       # Pass Message objects directly - client will format them
-      response = @api_client.call_streaming(@messages, system_prompt, api_options, &block)
-      Messages::AgentResponse.new(content: response[:content], tool_calls: response[:tool_calls])
+      result = @api_client.call_streaming(@messages, system_prompt, api_options, &wrapped_block)
+
+      # Update response with final data
+      @current_response.content = result[:content]
+      @current_response.usage = result[:usage] if result[:usage]
+      @current_response.stop_reason = result[:stop_reason]
+      @current_response.model = result[:model]
+      @current_response.tool_calls = result[:tool_calls]
+      @current_response.end!
+
+      # Update turn and session usage
+      if result[:usage] && @current_turn
+        @current_turn.usage.add(result[:usage])
+        @session.total_input_tokens += result[:usage].input_tokens
+        @session.total_output_tokens += result[:usage].output_tokens
+      end
+
+      trigger_callback(:on_response_end, @current_response)
+
+      Messages::AgentResponse.new(content: result[:content], tool_calls: result[:tool_calls])
     end
 
     def call_api
@@ -459,8 +590,39 @@ module ActiveIntelligence
         enable_prompt_caching: options[:enable_prompt_caching] != false
       )
 
+      # Create response tracker
+      @current_response = Response.new(turn_id: @current_turn&.id, is_streaming: false)
+      trigger_callback(:on_response_start, @current_response)
+
       # Pass Message objects directly - client will format them
       result = @api_client.call(@messages, system_prompt, api_options)
+
+      # Update response with final data
+      @current_response.content = result[:content]
+      @current_response.usage = result[:usage] if result[:usage]
+      @current_response.stop_reason = result[:stop_reason]
+      @current_response.model = result[:model]
+      @current_response.tool_calls = result[:tool_calls]
+      @current_response.end!
+
+      # Handle thinking callback for non-streaming
+      if result[:thinking]
+        thinking = Thinking.new(response_id: @current_response.id)
+        trigger_callback(:on_thinking_start, thinking)
+        thinking.content = result[:thinking]
+        thinking.end!
+        trigger_callback(:on_thinking_end, thinking)
+      end
+
+      # Update turn and session usage
+      if result[:usage] && @current_turn
+        @current_turn.usage.add(result[:usage])
+        @session.total_input_tokens += result[:usage].input_tokens
+        @session.total_output_tokens += result[:usage].output_tokens
+      end
+
+      trigger_callback(:on_response_end, @current_response)
+
       Messages::AgentResponse.new(content: result[:content], tool_calls: result[:tool_calls])
     end
 
@@ -471,7 +633,53 @@ module ActiveIntelligence
       end
     end
 
-    # Execute a specific tool call
+    # Execute a specific tool call with observability callbacks
+    def execute_tool_call_with_callbacks(tool_name, tool_params, tool_use_id)
+      # Find matching tool
+      tool = @tools.find do |t|
+        t.is_a?(Class) ? t.name == tool_name : t.class.name == tool_name
+      end
+
+      unless tool
+        return "Tool not found: #{tool_name}"
+      end
+
+      tool_instance = tool.is_a?(Class) ? tool.new : tool
+      tool_class = tool.is_a?(Class) ? tool : tool.class
+
+      # Create tool execution tracker
+      tool_execution = ToolExecution.new(
+        name: tool_name,
+        tool_class: tool_class.name,
+        input: tool_params,
+        tool_use_id: tool_use_id
+      )
+
+      trigger_callback(:on_tool_start, tool_execution)
+
+      begin
+        result = tool_instance.call(tool_params)
+        tool_execution.result = result
+        tool_execution.end!
+
+        # Check if the result is an error response (tool caught its own exception)
+        if result.is_a?(Hash) && result[:error]
+          trigger_callback(:on_tool_error, tool_execution)
+        else
+          trigger_callback(:on_tool_end, tool_execution)
+        end
+
+        result
+      rescue StandardError => e
+        tool_execution.error = e
+        tool_execution.end!
+        trigger_callback(:on_tool_error, tool_execution)
+        # Re-raise the error
+        raise
+      end
+    end
+
+    # Execute a specific tool call (legacy method for compatibility)
     def execute_tool_call(tool_name, tool_params)
       # Find matching tool
       tool = @tools.find do |t|

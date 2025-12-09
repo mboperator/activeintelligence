@@ -275,7 +275,7 @@ RSpec.describe ActiveIntelligence::Agent, 'hybrid tools' do
       pending_tool = response[:pending_tools].first
       expect(pending_tool[:tool_use_id]).to eq("toolu_123")
       expect(pending_tool[:tool_name]).to eq("frontend_tool")
-      expect(pending_tool[:parameters]).to eq({ action: "test" })
+      expect(pending_tool[:tool_input]).to eq({ action: "test" })
     end
 
     it 'includes only pending tool responses' do
