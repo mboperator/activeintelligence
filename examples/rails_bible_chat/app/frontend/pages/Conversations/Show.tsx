@@ -7,6 +7,7 @@ import { ArrowLeft, Send, Loader2 } from 'lucide-react'
 import { BibleVerse } from '@/components/BibleVerse'
 import { ThinkingBlock } from '@/components/ThinkingBlock'
 import { EmojiExplosion } from '@/components/EmojiExplosion'
+import { DebugPanel } from '@/components/DebugPanel'
 import { v4 } from 'uuid'
 interface Message {
   id: number
@@ -458,6 +459,9 @@ export default function Show({ conversation, messages: initialMessages }: Props)
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
+      {/* Debug Panel */}
+      <DebugPanel conversationId={conversation.id} />
+
       {/* Emoji Explosion Animation */}
       {explodingEmoji && (
         <EmojiExplosion

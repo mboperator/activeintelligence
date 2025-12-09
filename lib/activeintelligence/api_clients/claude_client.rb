@@ -177,10 +177,16 @@ module ActiveIntelligence
               Config.logger.warn "Response was truncated due to max_tokens limit. Consider increasing max_tokens."
             end
 
+            # Extract usage data
+            usage = extract_usage(result["usage"])
+
             # Check if there are tool calls in the response
             tool_calls = result["content"].select { |message| message["type"] == "tool_use" }
             content = result["content"].select { |message| message["type"] == "text" }
             thinking_blocks = result["content"].select { |message| message["type"] == "thinking" }
+
+            # Extract thinking content
+            thinking_content = thinking_blocks.map { |tb| tb["thinking"] }.join("\n")
 
             # Log thinking blocks for debugging (optional)
             if !thinking_blocks.empty? && Config.logger
@@ -202,7 +208,10 @@ module ActiveIntelligence
                     parameters: tc["input"]
                   }
                 end,
-                stop_reason: stop_reason
+                stop_reason: stop_reason,
+                usage: usage,
+                thinking: thinking_content.empty? ? nil : thinking_content,
+                model: result["model"]
               }
             end
 
@@ -210,7 +219,10 @@ module ActiveIntelligence
             return {
               content: text_content,
               tool_calls: [],
-              stop_reason: stop_reason
+              stop_reason: stop_reason,
+              usage: usage,
+              thinking: thinking_content.empty? ? nil : thinking_content,
+              model: result["model"]
             }
           end
 
@@ -226,6 +238,10 @@ module ActiveIntelligence
         stop_reason = nil
         thinking_content = ""
         current_tool_input = {}  # Track tool inputs by index
+        usage_data = nil
+        model = nil
+        chunk_index = 0
+        thinking_started = false
 
         buffer = ""
 
@@ -251,6 +267,15 @@ module ActiveIntelligence
             json_data = safe_parse_json(data)
             next unless json_data
 
+            # Capture model from message_start
+            if json_data["type"] == "message_start" && json_data["message"]
+              model = json_data["message"]["model"]
+              # Initial usage from message_start
+              if json_data["message"]["usage"]
+                usage_data = extract_usage(json_data["message"]["usage"])
+              end
+            end
+
             # Extract the text from the event
             if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "text_delta"
               text = json_data["delta"]["text"]
@@ -259,13 +284,35 @@ module ActiveIntelligence
               full_response << text
 
               # Yield JSON-wrapped SSE event to the block
-              event_data = { type: "content_delta", delta: text }.to_json
+              event_data = { type: "content_delta", delta: text, chunk_index: chunk_index }.to_json
+              chunk_index += 1
               yield "data: #{event_data}\n\n" if block_given?
             end
-            # Capture thinking blocks (don't yield to user)
+
+            # Detect thinking block start
+            if json_data["type"] == "content_block_start" && json_data["content_block"]["type"] == "thinking"
+              thinking_started = true
+              # Yield thinking_start event
+              event_data = { type: "thinking_start" }.to_json
+              yield "data: #{event_data}\n\n" if block_given?
+            end
+
+            # Capture thinking blocks
             if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "thinking_delta"
               thinking_content << json_data["delta"]["thinking"] if json_data["delta"]["thinking"]
             end
+
+            # Detect thinking block end
+            if json_data["type"] == "content_block_stop" && thinking_started
+              # Check if this was a thinking block (we track via thinking_started flag)
+              # This is a simplification - in practice you'd track block types by index
+              if !thinking_content.empty?
+                thinking_started = false
+                event_data = { type: "thinking_end", content: thinking_content }.to_json
+                yield "data: #{event_data}\n\n" if block_given?
+              end
+            end
+
             # Capture tool_use block start
             if json_data["type"] == "content_block_start" && json_data["content_block"]["type"] == "tool_use"
               tool_call = json_data["content_block"]
@@ -278,6 +325,7 @@ module ActiveIntelligence
               }
               current_tool_input[index] = ""
             end
+
             # Accumulate tool input from delta events
             if json_data["type"] == "content_block_delta" && json_data["delta"]["type"] == "input_json_delta"
               index = json_data["index"]
@@ -285,8 +333,19 @@ module ActiveIntelligence
               current_tool_input[index] ||= ""
               current_tool_input[index] << partial_json
             end
-            if json_data["type"] == "message_delta" && json_data["delta"]["stop_reason"]
-              stop_reason = json_data["delta"]["stop_reason"]
+
+            # Capture message_delta for stop_reason and final usage
+            if json_data["type"] == "message_delta"
+              stop_reason = json_data["delta"]["stop_reason"] if json_data["delta"]["stop_reason"]
+              # Final usage update from message_delta
+              if json_data["usage"]
+                final_usage = extract_usage(json_data["usage"])
+                if usage_data
+                  usage_data.add(final_usage)
+                else
+                  usage_data = final_usage
+                end
+              end
             end
           end
         end
@@ -321,8 +380,22 @@ module ActiveIntelligence
               parameters: tc[:input]
             }
           end,
-          stop_reason: stop_reason
+          stop_reason: stop_reason,
+          usage: usage_data,
+          thinking: thinking_content.empty? ? nil : thinking_content,
+          model: model
         }
+      end
+
+      def extract_usage(usage_hash)
+        return nil unless usage_hash
+
+        Usage.new(
+          input_tokens: usage_hash["input_tokens"] || 0,
+          output_tokens: usage_hash["output_tokens"] || 0,
+          cache_read_tokens: usage_hash["cache_read_input_tokens"] || 0,
+          cache_creation_tokens: usage_hash["cache_creation_input_tokens"] || 0
+        )
       end
     end
   end
