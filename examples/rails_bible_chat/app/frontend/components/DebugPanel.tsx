@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { ChevronDown, ChevronUp, X, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, X, Trash2, ChevronRight } from 'lucide-react'
 
 interface HookEvent {
   id: string
   hook: string
   payload: any
   timestamp: string
+  chunkCount?: number  // For batched chunks
+  chunks?: any[]       // Store individual chunks
 }
 
 interface DebugPanelProps {
@@ -19,6 +21,7 @@ export function DebugPanel({ conversationId }: DebugPanelProps) {
   const [isVisible, setIsVisible] = useState(true)
   const [events, setEvents] = useState<HookEvent[]>([])
   const [cable, setCable] = useState<any>(null)
+  const [expandedChunks, setExpandedChunks] = useState<Set<string>>(new Set())
   const eventsEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = () => {
@@ -46,13 +49,43 @@ export function DebugPanel({ conversationId }: DebugPanelProps) {
         { channel: 'DebugChannel', conversation_id: conversationId },
         {
           received: (data: { hook: string; payload: any; timestamp: string }) => {
-            const event: HookEvent = {
-              id: `${Date.now()}-${Math.random()}`,
-              hook: data.hook,
-              payload: data.payload,
-              timestamp: data.timestamp
+            // Special handling for on_response_chunk - batch them together
+            if (data.hook === 'on_response_chunk') {
+              setEvents(prev => {
+                const lastEvent = prev[prev.length - 1]
+
+                // If the last event was also a chunk batch, append to it
+                if (lastEvent && lastEvent.hook === 'on_response_chunk' && lastEvent.chunkCount !== undefined) {
+                  const updated = [...prev]
+                  updated[updated.length - 1] = {
+                    ...lastEvent,
+                    chunkCount: lastEvent.chunkCount + 1,
+                    chunks: [...(lastEvent.chunks || []), data.payload],
+                    timestamp: data.timestamp // Update to latest timestamp
+                  }
+                  return updated
+                } else {
+                  // Start a new chunk batch
+                  return [...prev, {
+                    id: `${Date.now()}-${Math.random()}`,
+                    hook: data.hook,
+                    payload: data.payload,
+                    timestamp: data.timestamp,
+                    chunkCount: 1,
+                    chunks: [data.payload]
+                  }]
+                }
+              })
+            } else {
+              // Regular event - add normally
+              const event: HookEvent = {
+                id: `${Date.now()}-${Math.random()}`,
+                hook: data.hook,
+                payload: data.payload,
+                timestamp: data.timestamp
+              }
+              setEvents(prev => [...prev, event])
             }
-            setEvents(prev => [...prev, event])
           }
         }
       )
@@ -68,6 +101,19 @@ export function DebugPanel({ conversationId }: DebugPanelProps) {
 
   const clearEvents = () => {
     setEvents([])
+    setExpandedChunks(new Set())
+  }
+
+  const toggleChunkExpansion = (eventId: string) => {
+    setExpandedChunks(prev => {
+      const next = new Set(prev)
+      if (next.has(eventId)) {
+        next.delete(eventId)
+      } else {
+        next.add(eventId)
+      }
+      return next
+    })
   }
 
   if (!isVisible) return null
@@ -131,24 +177,65 @@ export function DebugPanel({ conversationId }: DebugPanelProps) {
                 No events yet. Start a conversation to see hooks firing.
               </div>
             ) : (
-              events.map((event) => (
-                <div
-                  key={event.id}
-                  className="bg-white rounded-md border border-slate-200 p-2 text-xs font-mono"
-                >
-                  <div className="flex items-start justify-between mb-1">
-                    <span className={`font-semibold ${getHookColor(event.hook)}`}>
-                      {event.hook}
-                    </span>
-                    <span className="text-slate-400 text-[10px]">
-                      {new Date(event.timestamp).toLocaleTimeString()}
-                    </span>
+              events.map((event) => {
+                // Special rendering for batched chunks
+                if (event.hook === 'on_response_chunk' && event.chunkCount !== undefined) {
+                  const isExpanded = expandedChunks.has(event.id)
+                  return (
+                    <div
+                      key={event.id}
+                      className="bg-white rounded-md border border-slate-200 p-2 text-xs font-mono"
+                    >
+                      <div className="flex items-start justify-between mb-1">
+                        <button
+                          onClick={() => toggleChunkExpansion(event.id)}
+                          className="flex items-center gap-1 font-semibold text-green-600 hover:text-green-700"
+                        >
+                          <ChevronRight className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                          {event.hook} ({event.chunkCount} chunks)
+                        </button>
+                        <span className="text-slate-400 text-[10px]">
+                          {new Date(event.timestamp).toLocaleTimeString()}
+                        </span>
+                      </div>
+                      {isExpanded && (
+                        <div className="mt-2 space-y-1">
+                          {event.chunks?.map((chunk, idx) => (
+                            <pre key={idx} className="text-[10px] text-slate-600 overflow-x-auto bg-slate-50 p-2 rounded border border-slate-100">
+                              {JSON.stringify(chunk, null, 2)}
+                            </pre>
+                          ))}
+                        </div>
+                      )}
+                      {!isExpanded && (
+                        <div className="text-[10px] text-slate-500 italic mt-1">
+                          Click to expand {event.chunkCount} chunks
+                        </div>
+                      )}
+                    </div>
+                  )
+                }
+
+                // Regular event rendering
+                return (
+                  <div
+                    key={event.id}
+                    className="bg-white rounded-md border border-slate-200 p-2 text-xs font-mono"
+                  >
+                    <div className="flex items-start justify-between mb-1">
+                      <span className={`font-semibold ${getHookColor(event.hook)}`}>
+                        {event.hook}
+                      </span>
+                      <span className="text-slate-400 text-[10px]">
+                        {new Date(event.timestamp).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <pre className="text-[10px] text-slate-600 overflow-x-auto bg-slate-50 p-2 rounded border border-slate-100">
+                      {JSON.stringify(event.payload, null, 2)}
+                    </pre>
                   </div>
-                  <pre className="text-[10px] text-slate-600 overflow-x-auto bg-slate-50 p-2 rounded border border-slate-100">
-                    {JSON.stringify(event.payload, null, 2)}
-                  </pre>
-                </div>
-              ))
+                )
+              })
             )}
             <div ref={eventsEndRef} />
           </div>
