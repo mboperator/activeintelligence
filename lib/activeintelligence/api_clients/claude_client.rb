@@ -406,12 +406,19 @@ module ActiveIntelligence
       end
 
       # Retry wrapper with exponential backoff
+      # Supports callbacks for observability:
+      #   - on_rate_limit: called when rate limit is hit (receives: error, attempt, max_retries, will_retry)
+      #   - on_retry: called before each retry (receives: attempt, max_retries, delay, reason)
       def with_retry(options = {})
         retry_config = Config.settings[:retry]
         max_retries = options[:max_retries] || retry_config[:max_retries]
         base_delay = options[:base_delay] || retry_config[:base_delay]
         max_delay = options[:max_delay] || retry_config[:max_delay]
         backoff_factor = options[:backoff_factor] || retry_config[:backoff_factor]
+
+        # Callback hooks for observability
+        on_rate_limit = options[:on_rate_limit]
+        on_retry = options[:on_retry]
 
         # Allow disabling retries
         return yield if options[:retry] == false || max_retries == 0
@@ -425,6 +432,10 @@ module ActiveIntelligence
           rescue ApiRateLimitError => e
             last_error = e
             attempt += 1
+            will_retry = attempt <= max_retries
+
+            # Fire rate limit callback
+            on_rate_limit&.call(e, attempt, max_retries, will_retry)
 
             if attempt > max_retries
               logger.error "Rate limit exceeded after #{max_retries} retries"
@@ -437,6 +448,9 @@ module ActiveIntelligence
                     else
                       calculate_delay(attempt, base_delay, max_delay, backoff_factor)
                     end
+
+            # Fire retry callback before sleeping
+            on_retry&.call(attempt, max_retries, delay, e.rate_limit_type)
 
             logger.warn "Rate limited (attempt #{attempt}/#{max_retries}). Retrying in #{delay}s..."
             sleep(delay)

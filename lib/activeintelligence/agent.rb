@@ -635,10 +635,12 @@ module ActiveIntelligence
       system_prompt = build_system_prompt
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
-      # Merge options with default caching setting
+      # Merge options with default caching setting and rate limit callbacks
       api_options = options.merge(
         tools: api_tools,
-        enable_prompt_caching: options[:enable_prompt_caching] != false
+        enable_prompt_caching: options[:enable_prompt_caching] != false,
+        on_rate_limit: build_rate_limit_callback,
+        on_retry: build_retry_callback
       )
 
       # Create response tracker
@@ -703,10 +705,12 @@ module ActiveIntelligence
       system_prompt = build_system_prompt
       api_tools = @tools.empty? ? nil : format_tools_for_api
 
-      # Merge options with default caching setting
+      # Merge options with default caching setting and rate limit callbacks
       api_options = options.merge(
         tools: api_tools,
-        enable_prompt_caching: options[:enable_prompt_caching] != false
+        enable_prompt_caching: options[:enable_prompt_caching] != false,
+        on_rate_limit: build_rate_limit_callback,
+        on_retry: build_retry_callback
       )
 
       # Create response tracker
@@ -962,6 +966,45 @@ module ActiveIntelligence
     rescue StandardError => e
       # Log but don't raise - status sync failure shouldn't break the flow
       Config.logger.warn "Failed to sync message status to database: #{e.message}"
+    end
+
+    # Build callback lambda for rate limit events
+    def build_rate_limit_callback
+      ->(error, attempt, max_retries, will_retry) {
+        event = RateLimitEvent.new(
+          error: error,
+          attempt: attempt,
+          max_retries: max_retries,
+          will_retry: will_retry
+        )
+        trigger_callback(:on_rate_limit, event)
+
+        # If not retrying, also fire stop event
+        unless will_retry
+          trigger_callback(:on_stop, StopEvent.new(
+            reason: :rate_limit,
+            details: {
+              attempt: attempt,
+              max_retries: max_retries,
+              rate_limit_type: error.rate_limit_type,
+              retry_after: error.retry_after
+            }
+          ))
+        end
+      }
+    end
+
+    # Build callback lambda for retry events
+    def build_retry_callback
+      ->(attempt, max_retries, delay, reason) {
+        event = RetryEvent.new(
+          attempt: attempt,
+          max_retries: max_retries,
+          delay: delay,
+          reason: reason
+        )
+        trigger_callback(:on_retry, event)
+      }
     end
   end
 end
