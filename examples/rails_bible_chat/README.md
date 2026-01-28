@@ -362,23 +362,77 @@ See [MCP Server](#mcp-server-model-context-protocol) section below for details.
 
 ## MCP Server (Model Context Protocol)
 
-This app includes an MCP server that exposes the Bible Reference Tool to AI applications like Claude Desktop.
+This app includes an MCP server that exposes the Bible Reference Tool to AI applications like Claude Code and Claude Desktop.
 
 ### What is MCP?
 
 The [Model Context Protocol](https://modelcontextprotocol.io) is an open standard for connecting AI applications to external tools and data sources. With MCP, you can use the same tools from:
+- Claude Code (CLI)
 - Claude Desktop
 - Other MCP-compatible AI applications
-- Custom integrations
 
-### Testing the MCP Server
+### Connecting to Claude Code
 
-Once the Rails server is running, you can test the MCP endpoint with curl:
+Once your Rails server is running, add the MCP server to Claude Code:
 
 ```bash
-# 1. Initialize the connection
+# Add the server (stores in ~/.claude.json)
+claude mcp add --transport http bible-mcp http://localhost:3000/mcp
+
+# Verify connection
+claude
+> /mcp
+```
+
+To share with your team (stores in `.mcp.json` in project root):
+
+```bash
+claude mcp add --transport http bible-mcp --scope project http://localhost:3000/mcp
+```
+
+With authentication headers:
+
+```bash
+claude mcp add --transport http bible-mcp http://localhost:3000/mcp \
+  --header "X-API-Key: your-secret-key"
+```
+
+Manage servers:
+
+```bash
+claude mcp list              # List all configured servers
+claude mcp get bible-mcp     # Check specific server
+claude mcp remove bible-mcp  # Remove server
+```
+
+### Exposing via ngrok
+
+To expose your local MCP server to the internet (for Claude Desktop or remote access):
+
+1. Allow external hosts in `config/environments/development.rb`:
+   ```ruby
+   config.hosts = nil
+   ```
+
+2. Start ngrok:
+   ```bash
+   ngrok http 3000
+   ```
+
+3. Add to Claude Code using the ngrok URL:
+   ```bash
+   claude mcp add --transport http bible-mcp https://abc123.ngrok-free.app/mcp
+   ```
+
+### Testing with curl
+
+The MCP protocol requires a session lifecycle. Use a cookie jar (`-c`/`-b` flags) to maintain session state:
+
+```bash
+# 1. Initialize the connection (save cookies)
 curl -X POST http://localhost:3000/mcp \
   -H "Content-Type: application/json" \
+  -c cookies.txt \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
@@ -390,22 +444,22 @@ curl -X POST http://localhost:3000/mcp \
     }
   }'
 
-# 2. Send the initialized notification
+# 2. Send the initialized notification (use cookies)
 curl -X POST http://localhost:3000/mcp \
   -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "notifications/initialized"
-  }'
+  -b cookies.txt -c cookies.txt \
+  -d '{"jsonrpc": "2.0", "method": "notifications/initialized"}'
 
 # 3. List available tools
 curl -X POST http://localhost:3000/mcp \
   -H "Content-Type: application/json" \
+  -b cookies.txt \
   -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}'
 
 # 4. Call the bible_lookup tool
 curl -X POST http://localhost:3000/mcp \
   -H "Content-Type: application/json" \
+  -b cookies.txt \
   -d '{
     "jsonrpc": "2.0",
     "id": 3,
@@ -416,6 +470,8 @@ curl -X POST http://localhost:3000/mcp \
     }
   }'
 ```
+
+**Important**: Without the cookie flags, each request starts a new session and you'll get "Session not initialized" errors.
 
 ### MCP Controller (app/controllers/mcp_controller.rb)
 
@@ -448,13 +504,49 @@ Routes configuration (`config/routes.rb`):
 post '/mcp', to: 'mcp#handle'
 ```
 
-### Using with Claude Desktop
+### Authentication Patterns
 
-To use this MCP server with Claude Desktop, you would need to set up an HTTP transport. Claude Desktop currently supports stdio-based MCP servers. For HTTP servers like this one, you can:
+The `authenticate_mcp_request` hook gives you full access to the Rails request. Here are common patterns:
 
-1. Use a tool like [mcp-proxy](https://github.com/anthropics/mcp-proxy) to bridge HTTP to stdio
-2. Wait for direct HTTP support in Claude Desktop
-3. Use another MCP client that supports HTTP transport
+**API Key Authentication:**
+```ruby
+def authenticate_mcp_request
+  api_key = request.headers['X-API-Key']
+  api_key == Rails.application.credentials.mcp_api_key
+end
+```
+
+**Bearer Token / JWT:**
+```ruby
+def authenticate_mcp_request
+  token = request.headers['Authorization']&.sub(/^Bearer /, '')
+  return false unless token
+
+  @current_user = User.find_by_auth_token(token)
+  @current_user.present?
+end
+
+# Inject authenticated user into tools
+def build_tool(tool_class)
+  tool_class.new(user: @current_user)
+end
+```
+
+**Per-tool Authorization:**
+```ruby
+class AdminTool < ActiveIntelligence::Tool
+  attr_reader :user
+
+  def initialize(user: nil)
+    @user = user
+  end
+
+  def execute(params)
+    return error_response("Admin required") unless user&.admin?
+    # ... admin logic
+  end
+end
+```
 
 ### Available MCP Methods
 
