@@ -10,17 +10,15 @@ module ActiveIntelligence
       g.factory_bot dir: 'spec/factories'
     end
 
-    # Ensure models are autoloaded
-    config.autoload_paths << File.expand_path('models', __dir__)
-    config.eager_load_paths << File.expand_path('models', __dir__)
+    # The models directory contains ActiveRecord models that define constants
+    # directly in the ActiveIntelligence namespace (not ActiveIntelligence::Models::).
+    # We use Zeitwerk's push_dir to map the directory to the correct namespace.
+    MODELS_PATH = File.expand_path('models', __dir__)
 
-    # Explicitly require models when engine loads
-    initializer 'active_intelligence.load_models' do
-      require_relative 'models/conversation'
-      require_relative 'models/message'
-      require_relative 'models/user_message'
-      require_relative 'models/assistant_message'
-      require_relative 'models/tool_message'
+    # Use push_dir instead of collapse to explicitly map models/ -> ActiveIntelligence::
+    # This must be done before autoloaders.setup is called
+    initializer 'active_intelligence.configure_autoloader', before: :set_autoload_paths do
+      Rails.autoloaders.main.push_dir(MODELS_PATH, namespace: ActiveIntelligence)
     end
   end
 end
