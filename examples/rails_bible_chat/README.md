@@ -9,6 +9,7 @@ A complete example Rails application demonstrating ActiveIntelligence with datab
 - 💬 **Persistent Conversations** - Database-backed message history
 - ⚡ **Real-time Streaming** - SSE streaming for instant responses
 - 🎨 **Clean UI** - Simple, responsive chat interface
+- 🔌 **MCP Server** - Expose tools via Model Context Protocol for use with Claude Desktop and other AI apps
 
 ## What This Demonstrates
 
@@ -353,6 +354,114 @@ data:  you
 data: ...
 data: [DONE]
 ```
+
+### POST /mcp
+Model Context Protocol endpoint for AI applications
+
+See [MCP Server](#mcp-server-model-context-protocol) section below for details.
+
+## MCP Server (Model Context Protocol)
+
+This app includes an MCP server that exposes the Bible Reference Tool to AI applications like Claude Desktop.
+
+### What is MCP?
+
+The [Model Context Protocol](https://modelcontextprotocol.io) is an open standard for connecting AI applications to external tools and data sources. With MCP, you can use the same tools from:
+- Claude Desktop
+- Other MCP-compatible AI applications
+- Custom integrations
+
+### Testing the MCP Server
+
+Once the Rails server is running, you can test the MCP endpoint with curl:
+
+```bash
+# 1. Initialize the connection
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-11-25",
+      "capabilities": {},
+      "clientInfo": {"name": "curl-test", "version": "1.0"}
+    }
+  }'
+
+# 2. Send the initialized notification
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "notifications/initialized"
+  }'
+
+# 3. List available tools
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}'
+
+# 4. Call the bible_lookup tool
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "bible_lookup",
+      "arguments": {"reference": "John 3:16", "version": "KJV"}
+    }
+  }'
+```
+
+### MCP Controller (app/controllers/mcp_controller.rb)
+
+```ruby
+class McpController < ApplicationController
+  include ActiveIntelligence::MCP::RailsController
+
+  # Register tools to expose via MCP
+  mcp_tools BibleReferenceTool
+
+  # Server identification
+  mcp_server_name 'Bible Study MCP Server'
+  mcp_server_version '1.0.0'
+
+  protected
+
+  # Optional: Add authentication
+  # def authenticate_mcp_request
+  #   api_key = request.headers['X-API-Key']
+  #   api_key == Rails.application.credentials.mcp_api_key
+  # end
+
+  # Optional: Logging
+  def before_tool_call(tool_name, params)
+    Rails.logger.info "[MCP] Calling tool: #{tool_name}"
+  end
+end
+```
+
+### Using with Claude Desktop
+
+To use this MCP server with Claude Desktop, you would need to set up an HTTP transport. Claude Desktop currently supports stdio-based MCP servers. For HTTP servers like this one, you can:
+
+1. Use a tool like [mcp-proxy](https://github.com/anthropics/mcp-proxy) to bridge HTTP to stdio
+2. Wait for direct HTTP support in Claude Desktop
+3. Use another MCP client that supports HTTP transport
+
+### Available MCP Methods
+
+| Method | Description |
+|--------|-------------|
+| `initialize` | Establish connection and negotiate capabilities |
+| `notifications/initialized` | Signal that client is ready |
+| `ping` | Health check |
+| `tools/list` | List available tools and their schemas |
+| `tools/call` | Execute a tool with arguments |
 
 ## Customization Ideas
 
