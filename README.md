@@ -15,6 +15,7 @@ A Ruby gem for building AI agents powered by Claude (Anthropic's LLM). Create co
 - **Claude Integration**: First-class support for Anthropic's Claude models
 - **Prompt Caching**: Built-in support for 80-90% cost reduction via prompt caching
 - **Extended Thinking**: Captures Claude's reasoning process for complex tasks
+- **MCP Server**: Expose tools to Claude Code/Desktop via Model Context Protocol
 - **Production-Ready**: Optimized for Claude Code-level performance
 
 ## Installation
@@ -131,8 +132,85 @@ end
 - ✅ Streaming via ActionController::Live
 - ✅ Background job support for long-running agents
 - ✅ ActiveRecord models for conversations and messages
+- ✅ MCP server for Claude Code/Desktop integration
 
 📖 **See [RAILS_INTEGRATION.md](RAILS_INTEGRATION.md) for complete Rails documentation.**
+
+### MCP Server (Model Context Protocol)
+
+Expose your ActiveIntelligence tools to AI applications like Claude Code and Claude Desktop via the [Model Context Protocol](https://modelcontextprotocol.io).
+
+**1. Create an MCP controller:**
+
+```ruby
+# app/controllers/mcp_controller.rb
+class McpController < ActiveIntelligence::MCP::BaseController
+  # Register tools to expose
+  mcp_tools WeatherTool, SearchTool, DatabaseTool
+
+  # Server identification
+  mcp_server_name 'My App MCP Server'
+  mcp_server_version '1.0.0'
+
+  protected
+
+  # Optional: Add authentication
+  def authenticate_mcp_request
+    api_key = request.headers['X-API-Key']
+    api_key == Rails.application.credentials.mcp_api_key
+  end
+
+  # Optional: Inject dependencies into tools
+  def build_tool(tool_class)
+    tool_class.new(user: current_user)
+  end
+
+  # Optional: Logging
+  def before_tool_call(tool_name, params)
+    Rails.logger.info "[MCP] Calling #{tool_name}"
+  end
+
+  def after_tool_call(tool_name, params, result)
+    Rails.logger.info "[MCP] #{tool_name} completed"
+  end
+
+  # Optional: Instructions shown to AI clients
+  def server_instructions
+    "This server provides weather and search tools."
+  end
+end
+```
+
+**2. Add the route:**
+
+```ruby
+# config/routes.rb
+post '/mcp', to: 'mcp#handle'
+```
+
+**3. Connect from Claude Code:**
+
+```bash
+# Add the server
+claude mcp add --transport http my-server http://localhost:3000/mcp
+
+# With authentication
+claude mcp add --transport http my-server http://localhost:3000/mcp \
+  --header "X-API-Key: your-secret-key"
+
+# Verify connection
+claude
+> /mcp
+```
+
+**Key Features:**
+- ✅ Automatic JSON schema generation from your tools
+- ✅ Full MCP protocol compliance (initialize, tools/list, tools/call)
+- ✅ Authentication hooks with access to Rails request/session
+- ✅ Dependency injection for tools
+- ✅ Lifecycle hooks for logging/auditing
+
+📖 **See [examples/rails_bible_chat](examples/rails_bible_chat) for a complete working example.**
 
 ## Core Concepts
 
@@ -601,11 +679,15 @@ activeintelligence/
 │   │   ├── api_clients/
 │   │   │   ├── base_client.rb    # Abstract API client
 │   │   │   └── claude_client.rb  # Claude API implementation
+│   │   ├── mcp/
+│   │   │   └── base_controller.rb # MCP server base controller
 │   │   ├── messages.rb           # Message type system
 │   │   ├── config.rb             # Configuration management
 │   │   └── errors.rb             # Error classes
 │   └── activeintelligence.rb     # Main entry point
 ├── bin/                          # Example agents
+├── examples/
+│   └── rails_bible_chat/         # Complete Rails + MCP example
 ├── spec/                         # Test files
 ├── CLAUDE.md                     # AI agent development guide
 └── README.md                     # This file

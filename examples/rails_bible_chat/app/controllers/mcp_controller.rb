@@ -3,22 +3,31 @@
 # MCP Server Controller
 #
 # This controller exposes the Bible Reference Tool via the Model Context Protocol (MCP).
-# MCP allows AI applications (like Claude Desktop) to discover and use tools from this server.
+# MCP allows AI applications (like Claude Code) to discover and use tools from this server.
 #
-# Test with curl:
-#   # Initialize
+# Connect with Claude Code:
+#   claude mcp add --transport http bible-mcp http://localhost:3000/mcp
+#
+# Test with curl (use -c/-b flags to maintain session cookies):
+#
+#   # 1. Initialize (save cookies)
 #   curl -X POST http://localhost:3000/mcp \
-#     -H "Content-Type: application/json" \
+#     -H "Content-Type: application/json" -c cookies.txt \
 #     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}'
 #
-#   # List tools
+#   # 2. Send initialized notification
 #   curl -X POST http://localhost:3000/mcp \
-#     -H "Content-Type: application/json" \
+#     -H "Content-Type: application/json" -b cookies.txt -c cookies.txt \
+#     -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+#
+#   # 3. List tools
+#   curl -X POST http://localhost:3000/mcp \
+#     -H "Content-Type: application/json" -b cookies.txt \
 #     -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 #
-#   # Call tool
+#   # 4. Call tool
 #   curl -X POST http://localhost:3000/mcp \
-#     -H "Content-Type: application/json" \
+#     -H "Content-Type: application/json" -b cookies.txt \
 #     -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bible_lookup","arguments":{"reference":"John 3:16"}}}'
 #
 class McpController < ActiveIntelligence::MCP::BaseController
