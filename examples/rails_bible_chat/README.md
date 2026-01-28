@@ -420,9 +420,7 @@ curl -X POST http://localhost:3000/mcp \
 ### MCP Controller (app/controllers/mcp_controller.rb)
 
 ```ruby
-class McpController < ApplicationController
-  include ActiveIntelligence::MCP::RailsController
-
+class McpController < ActiveIntelligence::MCP::BaseController
   # Register tools to expose via MCP
   mcp_tools BibleReferenceTool
 
@@ -432,7 +430,7 @@ class McpController < ApplicationController
 
   protected
 
-  # Optional: Add authentication
+  # Optional: Add authentication (has access to request, session, etc.)
   # def authenticate_mcp_request
   #   api_key = request.headers['X-API-Key']
   #   api_key == Rails.application.credentials.mcp_api_key
@@ -443,6 +441,11 @@ class McpController < ApplicationController
     Rails.logger.info "[MCP] Calling tool: #{tool_name}"
   end
 end
+```
+
+Routes configuration (`config/routes.rb`):
+```ruby
+post '/mcp', to: 'mcp#handle'
 ```
 
 ### Using with Claude Desktop
