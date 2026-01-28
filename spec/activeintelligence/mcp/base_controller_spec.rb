@@ -2,6 +2,7 @@
 
 require 'spec_helper'
 require 'json'
+require 'time'
 
 # MCP Protocol Specification: https://modelcontextprotocol.io/specification/2025-11-25
 #
@@ -128,7 +129,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         request = { 'jsonrpc' => '2.0', 'id' => nil, 'method' => 'ping' }
         response = controller.handle_request(request)
 
-        expect(response['error']).to be_present
+        expect(response['error']).not_to be_nil
         expect(response['error']['code']).to eq(-32600) # Invalid Request
       end
 
@@ -136,7 +137,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         request = { 'id' => 1, 'method' => 'ping' }
         response = controller.handle_request(request)
 
-        expect(response['error']).to be_present
+        expect(response['error']).not_to be_nil
         expect(response['error']['code']).to eq(-32600)
       end
 
@@ -144,7 +145,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         request = { 'jsonrpc' => '1.0', 'id' => 1, 'method' => 'ping' }
         response = controller.handle_request(request)
 
-        expect(response['error']).to be_present
+        expect(response['error']).not_to be_nil
         expect(response['error']['code']).to eq(-32600)
       end
 
@@ -152,7 +153,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         request = { 'jsonrpc' => '2.0', 'id' => 1 }
         response = controller.handle_request(request)
 
-        expect(response['error']).to be_present
+        expect(response['error']).not_to be_nil
         expect(response['error']['code']).to eq(-32600)
       end
     end
@@ -212,6 +213,17 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
       end
 
       it 'returns -32602 for invalid params' do
+        # Initialize first
+        controller.handle_request(jsonrpc_request(
+          method: 'initialize',
+          params: {
+            'protocolVersion' => '2025-11-25',
+            'capabilities' => {},
+            'clientInfo' => { 'name' => 'Test', 'version' => '1.0' }
+          }
+        ))
+        controller.handle_request(jsonrpc_notification(method: 'notifications/initialized'))
+
         # tools/call with missing required 'name' param
         request = jsonrpc_request(method: 'tools/call', params: { 'arguments' => {} })
         response = controller.handle_request(request)
@@ -252,7 +264,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         request = jsonrpc_request(method: 'initialize', params: valid_initialize_params)
         response = controller.handle_request(request)
 
-        expect(response['result']).to be_present
+        expect(response['result']).to be_a(Hash)
         expect(response['error']).to be_nil
       end
 
@@ -274,7 +286,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         request = jsonrpc_request(method: 'initialize', params: valid_initialize_params)
         response = controller.handle_request(request)
 
-        expect(response['result']['capabilities']['tools']).to be_present
+        expect(response['result']['capabilities']['tools']).to be_a(Hash)
       end
 
       it 'returns serverInfo in response' do
@@ -348,7 +360,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         request = jsonrpc_request(method: 'tools/list')
         response = controller.handle_request(request)
 
-        expect(response['error']).to be_present
+        expect(response['error']).not_to be_nil
         expect(response['error']['message']).to match(/not initialized/i)
       end
 
@@ -359,7 +371,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         )
         response = controller.handle_request(request)
 
-        expect(response['error']).to be_present
+        expect(response['error']).not_to be_nil
       end
 
       it 'allows ping before initialization' do
@@ -471,8 +483,8 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         calc_tool = tools_response.find { |t| t['name'] == 'calculate_sum' }
 
         expect(calc_tool['inputSchema']['properties']).to be_a(Hash)
-        expect(calc_tool['inputSchema']['properties']['a']).to be_present
-        expect(calc_tool['inputSchema']['properties']['b']).to be_present
+        expect(calc_tool['inputSchema']['properties']['a']).to be_a(Hash)
+        expect(calc_tool['inputSchema']['properties']['b']).to be_a(Hash)
         expect(calc_tool['inputSchema']['required']).to include('a', 'b')
       end
 
@@ -561,7 +573,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         )
         response = controller.handle_request(request)
 
-        expect(response['error']).to be_present
+        expect(response['error']).not_to be_nil
         expect(response['error']['code']).to eq(-32602)
       end
 
@@ -586,7 +598,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         response = controller.handle_request(request)
 
         expect(response['error']).to be_nil
-        expect(response['result']['content']).to be_present
+        expect(response['result']['content']).to be_an(Array)
       end
     end
 
@@ -706,7 +718,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         )
         response = controller.handle_request(request)
 
-        expect(response['error']).to be_present
+        expect(response['error']).not_to be_nil
         expect(response['error']['code']).to eq(-32602)
         expect(response['error']['message']).to match(/unknown tool/i)
       end
@@ -723,7 +735,8 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
 
         # This could be either a protocol error or a tool execution error
         # depending on implementation - both are valid per spec
-        expect(response['error'].present? || response['result']['isError']).to be true
+        has_error = response['error'] || (response['result'] && response['result']['isError'])
+        expect(has_error).to be_truthy
       end
     end
   end
@@ -780,7 +793,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         request = jsonrpc_request(method: 'tools/list')
         response = authenticated_controller.handle_request(request)
 
-        expect(response['result']).to be_present
+        expect(response['result']).to be_a(Hash)
         expect(response['error']).to be_nil
       end
 
@@ -794,7 +807,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         })
         response = authenticated_controller.handle_request(request)
 
-        expect(response['error']).to be_present
+        expect(response['error']).not_to be_nil
         expect(response['error']['code']).to eq(-32600) # or custom auth error code
       end
 

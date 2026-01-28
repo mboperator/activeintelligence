@@ -8,6 +8,7 @@ require_relative 'activeintelligence/api_clients/claude_client'
 require_relative 'activeintelligence/api_clients/openai_client'
 require_relative 'activeintelligence/tool'
 require_relative 'activeintelligence/errors'
+require_relative 'activeintelligence/mcp'
 
 # Load Rails Engine if Rails is present
 if defined?(Rails)
