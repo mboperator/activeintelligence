@@ -19,42 +19,56 @@ module ActiveIntelligence
 
     # Base controller for MCP servers.
     #
-    # Subclass this controller and use the DSL to register tools:
+    # Subclass this controller in your Rails app to create an MCP endpoint:
     #
     #   class McpController < ActiveIntelligence::MCP::BaseController
     #     mcp_tools MyTool, AnotherTool
     #
+    #     # Optional: customize server info
+    #     mcp_server_name 'My App MCP Server'
+    #     mcp_server_version '1.0.0'
+    #
     #     protected
     #
     #     def authenticate_mcp_request
-    #       # Custom authentication logic
-    #       token = request_headers['Authorization']&.sub(/^Bearer /, '')
+    #       # Custom authentication - has access to request, session, etc.
+    #       token = request.headers['Authorization']&.sub(/^Bearer /, '')
     #       @current_client = ApiClient.find_by(token: token)
     #       @current_client.present?
     #     end
+    #
+    #     def build_tool(tool_class)
+    #       # Dependency injection
+    #       tool_class.new(user: @current_client.user)
+    #     end
     #   end
     #
-    class BaseController
+    # Then in routes.rb:
+    #
+    #   post '/mcp', to: 'mcp#handle'
+    #
+    class BaseController < ActionController::API
       class << self
-        attr_accessor :_mcp_tools, :_server_name, :_server_version
+        attr_accessor :_mcp_tools, :_mcp_server_name, :_mcp_server_version
 
         def _mcp_tools
           @_mcp_tools || []
         end
 
-        def _server_name
-          @_server_name || 'ActiveIntelligence MCP Server'
+        def _mcp_server_name
+          @_mcp_server_name || 'ActiveIntelligence MCP Server'
         end
 
-        def _server_version
-          @_server_version || '1.0.0'
+        def _mcp_server_version
+          @_mcp_server_version || '1.0.0'
         end
 
-        # Ensure subclasses inherit parent's tools by default
+        # Ensure subclasses inherit parent's configuration
         def inherited(subclass)
+          super
           subclass.instance_variable_set(:@_mcp_tools, @_mcp_tools&.dup || [])
-          subclass.instance_variable_set(:@_server_name, @_server_name)
-          subclass.instance_variable_set(:@_server_version, @_server_version)
+          subclass.instance_variable_set(:@_mcp_server_name, @_mcp_server_name)
+          subclass.instance_variable_set(:@_mcp_server_version, @_mcp_server_version)
         end
 
         # DSL method to register tools
@@ -62,51 +76,61 @@ module ActiveIntelligence
           @_mcp_tools = tools
         end
 
-        # DSL method to set server info
-        def server_name(name)
-          @_server_name = name
+        # DSL methods for server info
+        def mcp_server_name(name)
+          @_mcp_server_name = name
         end
 
-        def server_version(version)
-          @_server_version = version
+        def mcp_server_version(version)
+          @_mcp_server_version = version
         end
       end
 
-      def initialize
-        @initialized = false
-        @session_ready = false
-        @request_headers = {}
-        @client_info = nil
-        @client_capabilities = {}
+      # Main MCP endpoint action - wire this to POST /mcp in routes
+      def handle
+        body = request.body.read
+
+        if body.blank?
+          render json: jsonrpc_error(nil, ErrorCodes::INVALID_REQUEST, 'Empty request body')
+          return
+        end
+
+        # Store request headers for use in authenticate_mcp_request
+        @_request_headers = request.headers.to_h
+
+        # Restore MCP session state
+        restore_mcp_session
+
+        response_data = handle_raw_request(body)
+
+        # Save MCP session state
+        save_mcp_session
+
+        if response_data.nil?
+          # Notification - no response needed
+          head :no_content
+        else
+          render json: response_data
+        end
+      rescue JSON::ParserError => e
+        render json: jsonrpc_error(nil, ErrorCodes::PARSE_ERROR, "Parse error: #{e.message}")
+      rescue StandardError => e
+        Rails.logger.error "MCP Error: #{e.message}\n#{e.backtrace.join("\n")}" if defined?(Rails)
+        render json: jsonrpc_error(nil, ErrorCodes::INTERNAL_ERROR, "Internal error: #{e.message}")
       end
 
-      # Check if the session has completed initialization
-      def session_initialized?
-        @session_ready
-      end
-
-      # Set request headers (for testing or manual header injection)
-      def set_request_headers(headers)
-        @request_headers = headers || {}
-      end
-
-      # Access request headers
-      def request_headers
-        @request_headers
-      end
-
-      # Handle raw JSON string input
+      # Handle raw JSON string input (used by handle action and tests)
       def handle_raw_request(json_string)
         begin
-          request = JSON.parse(json_string)
+          request_data = JSON.parse(json_string)
         rescue JSON::ParserError => e
           return jsonrpc_error(nil, ErrorCodes::PARSE_ERROR, "Parse error: #{e.message}")
         end
 
-        if request.is_a?(Array)
-          handle_batch_request(request)
+        if request_data.is_a?(Array)
+          handle_batch_request(request_data)
         else
-          handle_request(request)
+          handle_jsonrpc_request(request_data)
         end
       end
 
@@ -114,22 +138,26 @@ module ActiveIntelligence
       def handle_batch_request(requests)
         return nil if requests.empty?
 
-        responses = requests.map { |req| handle_request(req) }.compact
+        responses = requests.map { |req| handle_jsonrpc_request(req) }.compact
         responses.empty? ? nil : responses
       end
 
-      # Main request handler
-      def handle_request(request)
+      # Main JSON-RPC request handler (aliased for backward compatibility)
+      def handle_jsonrpc_request(request_data)
+        handle_request(request_data)
+      end
+
+      def handle_request(request_data)
         # Validate basic JSON-RPC structure
-        validation_error = validate_jsonrpc_request(request)
+        validation_error = validate_jsonrpc_request(request_data)
         return validation_error if validation_error
 
-        method = request['method']
-        id = request['id']
-        params = request['params'] || {}
+        method = request_data['method']
+        id = request_data['id']
+        params = request_data['params'] || {}
 
         # Check if this is a notification (no id)
-        is_notification = !request.key?('id')
+        is_notification = !request_data.key?('id')
 
         # Route to appropriate handler
         result = route_request(method, params, id)
@@ -140,15 +168,31 @@ module ActiveIntelligence
         result
       end
 
+      # Check if the MCP session has completed initialization
+      def session_initialized?
+        @_mcp_session_ready
+      end
+
+      # For testing: allow setting request headers directly
+      def set_request_headers(headers)
+        @_request_headers = headers || {}
+      end
+
+      # Access request headers (from Rails request or set manually for tests)
+      def mcp_request_headers
+        @_request_headers || {}
+      end
+
       protected
 
       # Override this method to implement custom authentication
+      # Has full access to Rails request, session, etc.
       # Return true to allow the request, false to reject
       def authenticate_mcp_request
         true
       end
 
-      # Override this method to customize tool instantiation
+      # Override this method to customize tool instantiation (dependency injection)
       def build_tool(tool_class)
         tool_class.new
       end
@@ -166,34 +210,53 @@ module ActiveIntelligence
       # Override to customize server info
       def server_info
         {
-          'name' => self.class._server_name,
-          'version' => self.class._server_version
+          'name' => self.class._mcp_server_name,
+          'version' => self.class._mcp_server_version
         }
       end
 
-      # Override to provide custom instructions
+      # Override to provide custom instructions shown to AI clients
       def server_instructions
         nil
       end
 
       private
 
-      def validate_jsonrpc_request(request)
-        return jsonrpc_error(nil, ErrorCodes::INVALID_REQUEST, 'Invalid Request: not a JSON object') unless request.is_a?(Hash)
+      # Session management for MCP state
+      def restore_mcp_session
+        return unless defined?(session) && session
+
+        @_mcp_initialized = session[:mcp_initialized] || false
+        @_mcp_session_ready = session[:mcp_session_ready] || false
+        @_mcp_client_info = session[:mcp_client_info]
+        @_mcp_client_capabilities = session[:mcp_client_capabilities] || {}
+      end
+
+      def save_mcp_session
+        return unless defined?(session) && session
+
+        session[:mcp_initialized] = @_mcp_initialized
+        session[:mcp_session_ready] = @_mcp_session_ready
+        session[:mcp_client_info] = @_mcp_client_info
+        session[:mcp_client_capabilities] = @_mcp_client_capabilities
+      end
+
+      def validate_jsonrpc_request(request_data)
+        return jsonrpc_error(nil, ErrorCodes::INVALID_REQUEST, 'Invalid Request: not a JSON object') unless request_data.is_a?(Hash)
 
         # Check jsonrpc version
-        unless request['jsonrpc'] == '2.0'
-          return jsonrpc_error(request['id'], ErrorCodes::INVALID_REQUEST, 'Invalid Request: missing or invalid jsonrpc version')
+        unless request_data['jsonrpc'] == '2.0'
+          return jsonrpc_error(request_data['id'], ErrorCodes::INVALID_REQUEST, 'Invalid Request: missing or invalid jsonrpc version')
         end
 
         # Check for null id (MCP requirement: id MUST NOT be null)
-        if request.key?('id') && request['id'].nil?
+        if request_data.key?('id') && request_data['id'].nil?
           return jsonrpc_error(nil, ErrorCodes::INVALID_REQUEST, 'Invalid Request: id must not be null')
         end
 
         # Check for method
-        unless request['method'].is_a?(String)
-          return jsonrpc_error(request['id'], ErrorCodes::INVALID_REQUEST, 'Invalid Request: missing or invalid method')
+        unless request_data['method'].is_a?(String)
+          return jsonrpc_error(request_data['id'], ErrorCodes::INVALID_REQUEST, 'Invalid Request: missing or invalid method')
         end
 
         nil
@@ -221,7 +284,7 @@ module ActiveIntelligence
         end
 
         # Check lifecycle - most methods require initialization
-        unless @initialized
+        unless @_mcp_initialized
           return jsonrpc_error(id, ErrorCodes::INVALID_REQUEST, 'Session not initialized. Send initialize request first.')
         end
 
@@ -256,16 +319,10 @@ module ActiveIntelligence
         end
 
         client_version = params['protocolVersion']
-        @client_info = params['clientInfo']
-        @client_capabilities = params['capabilities'] || {}
+        @_mcp_client_info = params['clientInfo']
+        @_mcp_client_capabilities = params['capabilities'] || {}
 
-        # Version negotiation
-        unless SUPPORTED_VERSIONS.include?(client_version)
-          # Return our preferred version
-          # Client can disconnect if they don't support it
-        end
-
-        @initialized = true
+        @_mcp_initialized = true
 
         response_version = SUPPORTED_VERSIONS.include?(client_version) ? client_version : PROTOCOL_VERSION
 
@@ -282,21 +339,16 @@ module ActiveIntelligence
       end
 
       def handle_initialized_notification
-        @session_ready = true
+        @_mcp_session_ready = true
         nil # Notifications don't get responses
       end
 
-      def handle_tools_list(params, id)
-        cursor = params['cursor']
-
+      def handle_tools_list(_params, id)
         tools = registered_tools.map do |tool_class|
           tool_to_mcp_schema(tool_class)
         end
 
         result = { 'tools' => tools }
-        # Add nextCursor if implementing pagination
-        # result['nextCursor'] = next_cursor if next_cursor
-
         jsonrpc_result(id, result)
       end
 
@@ -362,14 +414,11 @@ module ActiveIntelligence
       def tool_to_mcp_schema(tool_class)
         schema = tool_class.to_json_schema
 
-        # Convert to MCP format
-        mcp_schema = {
+        {
           'name' => schema[:name],
           'description' => schema[:description] || '',
           'inputSchema' => convert_input_schema(schema[:input_schema], tool_class)
         }
-
-        mcp_schema
       end
 
       def convert_input_schema(schema, tool_class)
@@ -398,25 +447,13 @@ module ActiveIntelligence
 
       def format_tool_result(id, result)
         if result[:error]
-          # Tool returned an error response
           jsonrpc_result(id, {
-            'content' => [
-              {
-                'type' => 'text',
-                'text' => JSON.generate(result)
-              }
-            ],
+            'content' => [{ 'type' => 'text', 'text' => JSON.generate(result) }],
             'isError' => true
           })
         else
-          # Tool returned success
           jsonrpc_result(id, {
-            'content' => [
-              {
-                'type' => 'text',
-                'text' => JSON.generate(result)
-              }
-            ],
+            'content' => [{ 'type' => 'text', 'text' => JSON.generate(result) }],
             'isError' => false
           })
         end
@@ -424,12 +461,7 @@ module ActiveIntelligence
 
       def format_tool_error(id, message)
         jsonrpc_result(id, {
-          'content' => [
-            {
-              'type' => 'text',
-              'text' => JSON.generate({ error: true, message: message })
-            }
-          ],
+          'content' => [{ 'type' => 'text', 'text' => JSON.generate({ error: true, message: message }) }],
           'isError' => true
         })
       end
@@ -447,10 +479,7 @@ module ActiveIntelligence
       end
 
       def jsonrpc_error(id, code, message, data = nil)
-        error = {
-          'code' => code,
-          'message' => message
-        }
+        error = { 'code' => code, 'message' => message }
         error['data'] = data if data
 
         {

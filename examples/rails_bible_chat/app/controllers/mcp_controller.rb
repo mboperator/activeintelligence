@@ -5,18 +5,7 @@
 # This controller exposes the Bible Reference Tool via the Model Context Protocol (MCP).
 # MCP allows AI applications (like Claude Desktop) to discover and use tools from this server.
 #
-# Usage with Claude Desktop:
-#   Add to claude_desktop_config.json:
-#   {
-#     "mcpServers": {
-#       "bible-study": {
-#         "command": "curl",
-#         "args": ["-X", "POST", "http://localhost:3000/mcp"]
-#       }
-#     }
-#   }
-#
-# Or test with curl:
+# Test with curl:
 #   # Initialize
 #   curl -X POST http://localhost:3000/mcp \
 #     -H "Content-Type: application/json" \
@@ -32,9 +21,7 @@
 #     -H "Content-Type: application/json" \
 #     -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bible_lookup","arguments":{"reference":"John 3:16"}}}'
 #
-class McpController < ApplicationController
-  include ActiveIntelligence::MCP::RailsController
-
+class McpController < ActiveIntelligence::MCP::BaseController
   # Register tools to expose via MCP
   # Only backend tools should be exposed (not frontend tools like ShowEmojiTool)
   mcp_tools BibleReferenceTool

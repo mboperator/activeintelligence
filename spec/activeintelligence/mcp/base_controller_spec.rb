@@ -4,6 +4,20 @@ require 'spec_helper'
 require 'json'
 require 'time'
 
+# Stub ActionController::API for testing without Rails
+unless defined?(ActionController::API)
+  module ActionController
+    class API
+      def self.inherited(subclass)
+        # no-op for testing
+      end
+    end
+  end
+end
+
+# Now we can require the MCP BaseController
+require_relative '../../../lib/activeintelligence/mcp/base_controller'
+
 # MCP Protocol Specification: https://modelcontextprotocol.io/specification/2025-11-25
 #
 # These tests verify that the BaseController implementation correctly fulfills
@@ -765,7 +779,7 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
 
           def authenticate_mcp_request
             # Simulate checking authorization header
-            auth_header = request_headers['Authorization']
+            auth_header = mcp_request_headers['Authorization']
             auth_header == "Bearer #{self.class.auth_token}"
           end
         end
