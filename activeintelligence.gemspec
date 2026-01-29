@@ -1,12 +1,12 @@
 require_relative "lib/version"
 
 Gem::Specification.new do |spec|
-  spec.name = "activeintelligence.rb"
+  spec.name = "activeintelligence"
   spec.version = ActiveIntelligence::VERSION
   spec.authors = ["Marcus Bernales"]
   spec.email = ["marcus@totum.io"]
 
-  spec.summary = "A Ruby gem for building AI agents powered by Claude (Anthropic's LLM)"
+  spec.summary = "A Ruby gem for building AI agents"
   spec.description = "ActiveIntelligence provides a clean DSL for creating conversational AI agents with tool calling, memory management, and both static and streaming response modes."
   spec.homepage = "https://github.com/mboperator/activeintelligence"
   spec.license = "MIT"
