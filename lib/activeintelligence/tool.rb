@@ -3,8 +3,8 @@ module ActiveIntelligence
   class Tool
     # Class-level attributes and methods
     class << self
-      attr_reader :parameters, :error_handlers, :rescue_handlers
-      
+      attr_reader :parameters, :error_handlers, :rescue_handlers, :context_fields
+
       def inherited(subclass)
         subclass.instance_variable_set(:@parameters, {})
         subclass.instance_variable_set(:@error_handlers, {})
@@ -12,6 +12,12 @@ module ActiveIntelligence
         subclass.instance_variable_set(:@tool_type, :query)
         subclass.instance_variable_set(:@tool_description, nil)
         subclass.instance_variable_set(:@execution_context, :backend)
+
+        # Inherit context fields from parent class
+        parent_context_fields = subclass.superclass.respond_to?(:context_fields) ?
+          subclass.superclass.context_fields&.dup || {} : {}
+        subclass.instance_variable_set(:@context_fields, parent_context_fields)
+
         if subclass.name
           subclass.instance_variable_set(:@tool_name, underscore(subclass.name.split('::').last))
         else
@@ -72,6 +78,21 @@ module ActiveIntelligence
           default: default,
           enum: enum
         }
+      end
+
+      # Context field DSL - declares expected context from the Agent
+      # Context is runtime data (current_user, current_school) separate from LLM params
+      def context_field(name, required: false, type: nil)
+        @context_fields ||= {}
+        @context_fields[name] = {
+          required: required,
+          type: type
+        }
+
+        # Generate accessor method for this context field
+        define_method(name) do
+          @context[name]
+        end
       end
       
       # Define error handlers for specific scenarios
@@ -134,6 +155,13 @@ module ActiveIntelligence
     end
     
     # Instance methods
+    attr_reader :context
+
+    def initialize(context: {})
+      @context = context.dup.freeze
+      validate_context! if self.class.context_fields&.any?
+    end
+
     def call(params = {})
       # Convert string keys to symbols
       params = symbolize_keys(params)
@@ -184,10 +212,10 @@ module ActiveIntelligence
             details: { parameter: name }
           )
         end
-        
+
         # Skip validation for nil values (unless required)
         next if !params.key?(name) || params[name].nil?
-        
+
         # Type checking
         if options[:type] && !params[name].is_a?(options[:type])
           raise InvalidParameterError.new(
@@ -195,7 +223,7 @@ module ActiveIntelligence
             details: { parameter: name, expected: options[:type].to_s, received: params[name].class.to_s }
           )
         end
-        
+
         # Enum validation
         if options[:enum] && !options[:enum].include?(params[name])
           raise InvalidParameterError.new(
@@ -204,6 +232,23 @@ module ActiveIntelligence
           )
         end
       end
+    end
+
+    def validate_context!
+      missing_fields = []
+
+      self.class.context_fields.each do |name, options|
+        if options[:required] && (!@context.key?(name) || @context[name].nil?)
+          missing_fields << name
+        end
+      end
+
+      return if missing_fields.empty?
+
+      raise ContextError.new(
+        "Missing required context: #{missing_fields.join(', ')}",
+        missing_fields: missing_fields
+      )
     end
     
     def handle_exception(exception, params)
