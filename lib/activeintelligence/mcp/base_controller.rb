@@ -22,11 +22,11 @@ module ActiveIntelligence
     # Subclass this controller in your Rails app to create an MCP endpoint:
     #
     #   class McpController < ActiveIntelligence::MCP::BaseController
-    #     mcp_tools MyTool, AnotherTool
+    #     tools MyTool, AnotherTool
     #
     #     # Optional: customize server info
-    #     mcp_server_name 'My App MCP Server'
-    #     mcp_server_version '1.0.0'
+    #     server_name 'My App MCP Server'
+    #     server_version '1.0.0'
     #
     #     protected
     #
@@ -72,16 +72,16 @@ module ActiveIntelligence
         end
 
         # DSL method to register tools
-        def mcp_tools(*tools)
+        def tools(*tools)
           @_mcp_tools = tools
         end
 
         # DSL methods for server info
-        def mcp_server_name(name)
+        def server_name(name)
           @_mcp_server_name = name
         end
 
-        def mcp_server_version(version)
+        def server_version(version)
           @_mcp_server_version = version
         end
       end
