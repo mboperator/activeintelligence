@@ -33,11 +33,11 @@
 class McpController < ActiveIntelligence::MCP::BaseController
   # Register tools to expose via MCP
   # Only backend tools should be exposed (not frontend tools like ShowEmojiTool)
-  mcp_tools BibleReferenceTool
+  tools BibleReferenceTool
 
   # Server identification
-  mcp_server_name 'Bible Study MCP Server'
-  mcp_server_version '1.0.0'
+  server_name 'Bible Study MCP Server'
+  server_version '1.0.0'
 
   protected
 

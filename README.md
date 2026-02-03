@@ -146,11 +146,11 @@ Expose your ActiveIntelligence tools to AI applications like Claude Code and Cla
 # app/controllers/mcp_controller.rb
 class McpController < ActiveIntelligence::MCP::BaseController
   # Register tools to expose
-  mcp_tools WeatherTool, SearchTool, DatabaseTool
+  tools WeatherTool, SearchTool, DatabaseTool
 
   # Server identification
-  mcp_server_name 'My App MCP Server'
-  mcp_server_version '1.0.0'
+  server_name 'My App MCP Server'
+  server_version '1.0.0'
 
   protected
 
