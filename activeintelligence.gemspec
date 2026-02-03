@@ -1,7 +1,7 @@
 require_relative "lib/version"
 
 Gem::Specification.new do |spec|
-  spec.name = "activeintelligence.rb"
+  spec.name = "activeintelligence"
   spec.version = ActiveIntelligence::VERSION
   spec.authors = ["Marcus Bernales"]
   spec.email = ["marcus@totum.io"]
