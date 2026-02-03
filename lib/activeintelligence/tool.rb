@@ -3,7 +3,7 @@ module ActiveIntelligence
   class Tool
     # Class-level attributes and methods
     class << self
-      attr_reader :parameters, :error_handlers, :rescue_handlers, :context_fields
+      attr_reader :parameters, :error_handlers, :rescue_handlers, :context_fields, :before_execute_callbacks
 
       def inherited(subclass)
         subclass.instance_variable_set(:@parameters, {})
@@ -17,6 +17,11 @@ module ActiveIntelligence
         parent_context_fields = subclass.superclass.respond_to?(:context_fields) ?
           subclass.superclass.context_fields&.dup || {} : {}
         subclass.instance_variable_set(:@context_fields, parent_context_fields)
+
+        # Inherit before_execute callbacks from parent class
+        parent_callbacks = subclass.superclass.respond_to?(:before_execute_callbacks) ?
+          subclass.superclass.before_execute_callbacks&.dup || [] : []
+        subclass.instance_variable_set(:@before_execute_callbacks, parent_callbacks)
 
         if subclass.name
           subclass.instance_variable_set(:@tool_name, underscore(subclass.name.split('::').last))
@@ -105,6 +110,13 @@ module ActiveIntelligence
         handler = block_given? ? block : with
         @rescue_handlers[exception_class] = handler
       end
+
+      # Register a callback to run before execute
+      # Can be a method name (symbol) or a block
+      def before_execute(method_name = nil, &block)
+        @before_execute_callbacks ||= []
+        @before_execute_callbacks << (method_name || block)
+      end
       
       # Generate JSON schema for LLM tool calling APIs
       def to_json_schema
@@ -174,6 +186,7 @@ module ActiveIntelligence
       
       # Execute the tool with error handling
       begin
+        run_before_execute_callbacks(params)
         execute(params)
       rescue StandardError => e
         handle_exception(e, params)
@@ -193,14 +206,27 @@ module ActiveIntelligence
     
     def apply_defaults(params)
       result = params.dup
-      
+
       self.class.parameters.each do |name, options|
         if !result.key?(name) && options.key?(:default)
           result[name] = options[:default]
         end
       end
-      
+
       result
+    end
+
+    def run_before_execute_callbacks(params)
+      return unless self.class.before_execute_callbacks&.any?
+
+      self.class.before_execute_callbacks.each do |callback|
+        case callback
+        when Symbol
+          send(callback, params)
+        when Proc
+          instance_exec(params, &callback)
+        end
+      end
     end
     
     def validate_params!(params)

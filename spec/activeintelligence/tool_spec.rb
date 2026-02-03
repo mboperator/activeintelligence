@@ -295,6 +295,280 @@ RSpec.describe ActiveIntelligence::Tool do
     end
   end
 
+  describe 'before_execute callbacks' do
+    describe 'single callback' do
+      let(:tool_with_callback) do
+        Class.new(ActiveIntelligence::Tool) do
+          name "callback_tool"
+          context_field :current_user, required: true
+
+          before_execute :check_authentication
+
+          param :query, type: String
+
+          def execute(params)
+            success_response({ query: params[:query] })
+          end
+
+          private
+
+          def check_authentication(_params)
+            raise ActiveIntelligence::AuthenticationError.new("Not authenticated") unless current_user&.authenticated?
+          end
+        end
+      end
+
+      it 'runs callback before execute' do
+        authenticated_user = double('User', authenticated?: true)
+        tool = tool_with_callback.new(context: { current_user: authenticated_user })
+        result = tool.call(query: 'test')
+
+        expect(result[:success]).to be true
+        expect(result[:data][:query]).to eq('test')
+      end
+
+      it 'halts execution when callback raises error' do
+        unauthenticated_user = double('User', authenticated?: false)
+        tool = tool_with_callback.new(context: { current_user: unauthenticated_user })
+        result = tool.call(query: 'test')
+
+        expect(result[:error]).to be true
+        expect(result[:message]).to eq("Not authenticated")
+      end
+    end
+
+    describe 'multiple callbacks' do
+      let(:tool_with_multiple_callbacks) do
+        Class.new(ActiveIntelligence::Tool) do
+          name "multi_callback_tool"
+          context_field :current_user, required: true
+
+          before_execute :check_authentication
+          before_execute :check_authorization
+
+          param :query, type: String
+
+          def execute(params)
+            success_response({ query: params[:query] })
+          end
+
+          private
+
+          def check_authentication(_params)
+            raise ActiveIntelligence::AuthenticationError.new("Not authenticated") unless current_user&.authenticated?
+          end
+
+          def check_authorization(_params)
+            raise ActiveIntelligence::AuthorizationError.new("Not authorized") unless current_user&.admin?
+          end
+        end
+      end
+
+      it 'runs all callbacks in order when all pass' do
+        admin_user = double('User', authenticated?: true, admin?: true)
+        tool = tool_with_multiple_callbacks.new(context: { current_user: admin_user })
+        result = tool.call(query: 'test')
+
+        expect(result[:success]).to be true
+      end
+
+      it 'halts at first failing callback' do
+        # Not authenticated - should fail on first callback
+        unauthenticated_user = double('User', authenticated?: false, admin?: true)
+        tool = tool_with_multiple_callbacks.new(context: { current_user: unauthenticated_user })
+        result = tool.call(query: 'test')
+
+        expect(result[:error]).to be true
+        expect(result[:message]).to eq("Not authenticated")
+      end
+
+      it 'halts at second callback if first passes but second fails' do
+        # Authenticated but not admin
+        non_admin_user = double('User', authenticated?: true, admin?: false)
+        tool = tool_with_multiple_callbacks.new(context: { current_user: non_admin_user })
+        result = tool.call(query: 'test')
+
+        expect(result[:error]).to be true
+        expect(result[:message]).to eq("Not authorized")
+      end
+    end
+
+    describe 'callback with block' do
+      let(:tool_with_block_callback) do
+        Class.new(ActiveIntelligence::Tool) do
+          name "block_callback_tool"
+          context_field :current_user, required: true
+
+          before_execute do |_params|
+            raise ActiveIntelligence::AuthorizationError.new("Admin required") unless current_user&.admin?
+          end
+
+          def execute(params)
+            success_response({ executed: true })
+          end
+        end
+      end
+
+      it 'executes block callback with access to context' do
+        admin_user = double('User', admin?: true)
+        tool = tool_with_block_callback.new(context: { current_user: admin_user })
+        result = tool.call({})
+
+        expect(result[:success]).to be true
+      end
+
+      it 'halts when block callback raises error' do
+        non_admin_user = double('User', admin?: false)
+        tool = tool_with_block_callback.new(context: { current_user: non_admin_user })
+        result = tool.call({})
+
+        expect(result[:error]).to be true
+        expect(result[:message]).to eq("Admin required")
+      end
+    end
+
+    describe 'callback inheritance' do
+      let(:parent_tool) do
+        Class.new(ActiveIntelligence::Tool) do
+          name "parent_tool"
+          context_field :current_user, required: true
+
+          before_execute :check_authentication
+
+          def execute(params)
+            success_response({ from: "parent" })
+          end
+
+          private
+
+          def check_authentication(_params)
+            raise ActiveIntelligence::AuthenticationError.new("Not authenticated") unless current_user&.authenticated?
+          end
+        end
+      end
+
+      let(:child_tool) do
+        Class.new(parent_tool) do
+          name "child_tool"
+
+          before_execute :check_authorization
+
+          def execute(params)
+            success_response({ from: "child" })
+          end
+
+          private
+
+          def check_authorization(_params)
+            raise ActiveIntelligence::AuthorizationError.new("Not authorized") unless current_user&.admin?
+          end
+        end
+      end
+
+      it 'inherits parent callbacks' do
+        expect(child_tool.before_execute_callbacks.length).to eq(2)
+      end
+
+      it 'runs parent callback first' do
+        unauthenticated_user = double('User', authenticated?: false, admin?: true)
+        tool = child_tool.new(context: { current_user: unauthenticated_user })
+        result = tool.call({})
+
+        # Should fail on parent's authentication check
+        expect(result[:error]).to be true
+        expect(result[:message]).to eq("Not authenticated")
+      end
+
+      it 'runs child callback after parent' do
+        authenticated_non_admin = double('User', authenticated?: true, admin?: false)
+        tool = child_tool.new(context: { current_user: authenticated_non_admin })
+        result = tool.call({})
+
+        # Should pass parent's auth but fail on child's admin check
+        expect(result[:error]).to be true
+        expect(result[:message]).to eq("Not authorized")
+      end
+
+      it 'does not affect parent tool callbacks' do
+        expect(parent_tool.before_execute_callbacks.length).to eq(1)
+      end
+    end
+
+    describe 'callback with params access' do
+      let(:tool_with_params_check) do
+        Class.new(ActiveIntelligence::Tool) do
+          name "params_callback_tool"
+
+          before_execute :validate_dangerous_action
+
+          param :action, type: String, required: true
+          param :confirmed, type: String, default: "false"
+
+          def execute(params)
+            success_response({ action: params[:action] })
+          end
+
+          private
+
+          def validate_dangerous_action(params)
+            if params[:action] == "delete" && params[:confirmed] != "true"
+              raise ActiveIntelligence::AuthorizationError.new(
+                "Dangerous action requires confirmation",
+                details: { action: params[:action] }
+              )
+            end
+          end
+        end
+      end
+
+      it 'allows callback to inspect params' do
+        tool = tool_with_params_check.new
+        result = tool.call(action: "read")
+
+        expect(result[:success]).to be true
+      end
+
+      it 'halts based on param values' do
+        tool = tool_with_params_check.new
+        result = tool.call(action: "delete")
+
+        expect(result[:error]).to be true
+        expect(result[:message]).to eq("Dangerous action requires confirmation")
+        expect(result[:details][:action]).to eq("delete")
+      end
+
+      it 'allows action when confirmed' do
+        tool = tool_with_params_check.new
+        result = tool.call(action: "delete", confirmed: "true")
+
+        expect(result[:success]).to be true
+      end
+    end
+
+    describe 'tool without callbacks' do
+      let(:simple_tool) do
+        Class.new(ActiveIntelligence::Tool) do
+          name "no_callback_tool"
+
+          def execute(params)
+            success_response({ executed: true })
+          end
+        end
+      end
+
+      it 'has empty callbacks array' do
+        expect(simple_tool.before_execute_callbacks).to eq([])
+      end
+
+      it 'executes normally without callbacks' do
+        tool = simple_tool.new
+        result = tool.call({})
+
+        expect(result[:success]).to be true
+      end
+    end
+  end
+
   describe 'tool execution' do
     let(:backend_tool_class) do
       Class.new(ActiveIntelligence::Tool) do
