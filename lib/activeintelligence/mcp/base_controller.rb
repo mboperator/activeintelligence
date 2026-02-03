@@ -192,9 +192,21 @@ module ActiveIntelligence
         true
       end
 
+      # Override this method to provide context for tools (current_user, current_school, etc.)
+      # This context is passed to all tools and is separate from LLM params.
+      #
+      # Example:
+      #   def mcp_context
+      #     { current_user: @current_user, current_school: @current_school }
+      #   end
+      def mcp_context
+        {}
+      end
+
       # Override this method to customize tool instantiation (dependency injection)
+      # By default, passes mcp_context to tools. Override for more complex scenarios.
       def build_tool(tool_class)
-        tool_class.new
+        tool_class.new(context: mcp_context)
       end
 
       # Hook called before tool execution

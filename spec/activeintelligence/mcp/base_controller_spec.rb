@@ -1008,6 +1008,159 @@ RSpec.describe ActiveIntelligence::MCP::BaseController do
         expect(dependency_injection_controller_class.injected_context).to eq({ user_id: 123 })
       end
     end
+
+    describe 'mcp_context hook' do
+      let(:context_tool) do
+        Class.new(ActiveIntelligence::Tool) do
+          name 'context_tool'
+          description 'A tool that uses context'
+
+          context_field :current_user, required: true
+          context_field :current_school, required: true
+
+          param :query, type: String, required: false
+
+          def execute(params)
+            success_response({
+              user_id: current_user[:id],
+              school_id: current_school[:id],
+              query: params[:query]
+            })
+          end
+        end
+      end
+
+      let(:context_controller_class) do
+        tool = context_tool
+        Class.new(ActiveIntelligence::MCP::BaseController) do
+          @_mcp_tools = [tool]
+
+          def self._mcp_tools
+            @_mcp_tools
+          end
+
+          protected
+
+          def mcp_context
+            {
+              current_user: { id: 42, name: 'Alice' },
+              current_school: { id: 123, name: 'Test School' }
+            }
+          end
+        end
+      end
+
+      let(:context_controller) do
+        ctrl = context_controller_class.new
+        ctrl.handle_request(jsonrpc_request(
+          method: 'initialize',
+          params: {
+            'protocolVersion' => '2025-11-25',
+            'capabilities' => {},
+            'clientInfo' => { 'name' => 'Test', 'version' => '1.0' }
+          }
+        ))
+        ctrl.handle_request(jsonrpc_notification(method: 'notifications/initialized'))
+        ctrl
+      end
+
+      it 'passes mcp_context to tools via build_tool' do
+        request = jsonrpc_request(
+          method: 'tools/call',
+          params: {
+            'name' => 'context_tool',
+            'arguments' => { 'query' => 'test query' }
+          }
+        )
+        response = context_controller.handle_request(request)
+
+        expect(response['error']).to be_nil
+        content = JSON.parse(response['result']['content'].first['text'], symbolize_names: true)
+        expect(content[:data][:user_id]).to eq(42)
+        expect(content[:data][:school_id]).to eq(123)
+        expect(content[:data][:query]).to eq('test query')
+      end
+
+      it 'validates required context fields' do
+        # Controller without mcp_context override (empty context)
+        missing_context_controller_class = Class.new(ActiveIntelligence::MCP::BaseController) do
+          @_mcp_tools = []
+
+          def self._mcp_tools
+            @_mcp_tools
+          end
+        end
+        # Add the context_tool which requires context
+        missing_context_controller_class.instance_variable_set(:@_mcp_tools, [context_tool])
+
+        ctrl = missing_context_controller_class.new
+        ctrl.handle_request(jsonrpc_request(
+          method: 'initialize',
+          params: {
+            'protocolVersion' => '2025-11-25',
+            'capabilities' => {},
+            'clientInfo' => { 'name' => 'Test', 'version' => '1.0' }
+          }
+        ))
+        ctrl.handle_request(jsonrpc_notification(method: 'notifications/initialized'))
+
+        request = jsonrpc_request(
+          method: 'tools/call',
+          params: {
+            'name' => 'context_tool',
+            'arguments' => {}
+          }
+        )
+        response = ctrl.handle_request(request)
+
+        # Should return an internal error because context validation failed
+        expect(response['error']).not_to be_nil
+        expect(response['error']['code']).to eq(ActiveIntelligence::MCP::ErrorCodes::INTERNAL_ERROR)
+        expect(response['error']['message']).to include('Missing required context')
+      end
+
+      it 'works with tools that have no context requirements' do
+        # Use the calculator_tool which has no context_field declarations
+        mixed_controller_class = Class.new(ActiveIntelligence::MCP::BaseController) do
+          @_mcp_tools = []
+
+          def self._mcp_tools
+            @_mcp_tools
+          end
+
+          protected
+
+          def mcp_context
+            { current_user: { id: 1 } }
+          end
+        end
+        mixed_controller_class.instance_variable_set(:@_mcp_tools, [calculator_tool])
+
+        ctrl = mixed_controller_class.new
+        ctrl.handle_request(jsonrpc_request(
+          method: 'initialize',
+          params: {
+            'protocolVersion' => '2025-11-25',
+            'capabilities' => {},
+            'clientInfo' => { 'name' => 'Test', 'version' => '1.0' }
+          }
+        ))
+        ctrl.handle_request(jsonrpc_notification(method: 'notifications/initialized'))
+
+        request = jsonrpc_request(
+          method: 'tools/call',
+          params: {
+            'name' => 'calculate_sum',
+            'arguments' => { 'a' => 5, 'b' => 3 }
+          }
+        )
+        response = ctrl.handle_request(request)
+
+        expect(response['error']).to be_nil
+        content = JSON.parse(response['result']['content'].first['text'], symbolize_names: true)
+        expect(content[:data][:result]).to eq(8)
+      end
+    end
   end
 
   # ============================================================================
