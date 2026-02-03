@@ -1,6 +1,194 @@
 require 'spec_helper'
 
 RSpec.describe ActiveIntelligence::Tool do
+  describe 'context DSL' do
+    describe 'context_field' do
+      let(:tool_with_context_fields) do
+        Class.new(ActiveIntelligence::Tool) do
+          name "scoped_tool"
+          description "A tool with context fields"
+
+          context_field :current_user, required: true
+          context_field :current_school, required: true
+          context_field :permissions, required: false
+
+          param :query, type: String, required: true
+
+          def execute(params)
+            success_response({
+              query: params[:query],
+              user_id: current_user&.id,
+              school_id: current_school&.id
+            })
+          end
+        end
+      end
+
+      it 'registers context fields on the class' do
+        expect(tool_with_context_fields.context_fields).to have_key(:current_user)
+        expect(tool_with_context_fields.context_fields).to have_key(:current_school)
+        expect(tool_with_context_fields.context_fields).to have_key(:permissions)
+      end
+
+      it 'stores required flag for context fields' do
+        expect(tool_with_context_fields.context_fields[:current_user][:required]).to be true
+        expect(tool_with_context_fields.context_fields[:current_school][:required]).to be true
+        expect(tool_with_context_fields.context_fields[:permissions][:required]).to be false
+      end
+
+      it 'generates accessor methods for context fields' do
+        user = double('User', id: 123)
+        school = double('School', id: 456)
+
+        tool = tool_with_context_fields.new(context: { current_user: user, current_school: school })
+
+        expect(tool.current_user).to eq(user)
+        expect(tool.current_school).to eq(school)
+        expect(tool.permissions).to be_nil
+      end
+
+      it 'inherits context fields in subclasses' do
+        parent_tool = Class.new(ActiveIntelligence::Tool) do
+          context_field :current_user, required: true
+        end
+
+        child_tool = Class.new(parent_tool) do
+          context_field :current_school, required: true
+        end
+
+        expect(child_tool.context_fields).to have_key(:current_user)
+        expect(child_tool.context_fields).to have_key(:current_school)
+      end
+    end
+
+    describe 'context validation' do
+      let(:strict_tool) do
+        Class.new(ActiveIntelligence::Tool) do
+          name "strict_tool"
+          context_field :current_user, required: true
+          context_field :current_school, required: true
+
+          def execute(params)
+            success_response({})
+          end
+        end
+      end
+
+      it 'raises error when required context is missing' do
+        expect {
+          strict_tool.new(context: { current_user: double('User') })
+        }.to raise_error(ActiveIntelligence::ContextError, /missing required context.*current_school/i)
+      end
+
+      it 'raises error when context is nil for required field' do
+        expect {
+          strict_tool.new(context: { current_user: nil, current_school: double('School') })
+        }.to raise_error(ActiveIntelligence::ContextError, /missing required context.*current_user/i)
+      end
+
+      it 'succeeds when all required context is provided' do
+        expect {
+          strict_tool.new(context: {
+            current_user: double('User'),
+            current_school: double('School')
+          })
+        }.not_to raise_error
+      end
+
+      it 'allows optional context to be missing' do
+        tool_class = Class.new(ActiveIntelligence::Tool) do
+          name "optional_context_tool"
+          context_field :current_user, required: true
+          context_field :extra_data, required: false
+
+          def execute(params)
+            success_response({})
+          end
+        end
+
+        expect {
+          tool_class.new(context: { current_user: double('User') })
+        }.not_to raise_error
+      end
+    end
+
+    describe 'context access during execution' do
+      let(:tool_class) do
+        Class.new(ActiveIntelligence::Tool) do
+          name "context_access_tool"
+          context_field :current_user, required: true
+          context_field :current_school, required: true
+
+          param :query, type: String, required: true
+
+          def execute(params)
+            # Access context via accessor methods
+            success_response({
+              query: params[:query],
+              user_name: current_user.name,
+              school_name: current_school.name
+            })
+          end
+        end
+      end
+
+      it 'provides context separately from params during execution' do
+        user = double('User', name: 'Alice')
+        school = double('School', name: 'Test School')
+
+        tool = tool_class.new(context: { current_user: user, current_school: school })
+        result = tool.call(query: 'search term')
+
+        expect(result[:success]).to be true
+        expect(result[:data][:query]).to eq('search term')
+        expect(result[:data][:user_name]).to eq('Alice')
+        expect(result[:data][:school_name]).to eq('Test School')
+      end
+
+      it 'keeps context immutable during execution' do
+        user = double('User', name: 'Alice')
+        school = double('School', name: 'Test School')
+
+        tool = tool_class.new(context: { current_user: user, current_school: school })
+
+        # Context should be frozen or at least not modifiable via params
+        tool.call(query: 'test', current_user: 'hacker')
+
+        expect(tool.current_user).to eq(user)  # Should still be original
+      end
+    end
+
+    describe 'tools without context fields' do
+      let(:simple_tool) do
+        Class.new(ActiveIntelligence::Tool) do
+          name "simple_tool"
+          param :message, type: String
+
+          def execute(params)
+            success_response({ message: params[:message] })
+          end
+        end
+      end
+
+      it 'works without any context' do
+        tool = simple_tool.new
+        result = tool.call(message: 'hello')
+
+        expect(result[:success]).to be true
+        expect(result[:data][:message]).to eq('hello')
+      end
+
+      it 'accepts context even without context_field declarations' do
+        tool = simple_tool.new(context: { current_user: double('User') })
+        expect(tool.context[:current_user]).not_to be_nil
+      end
+
+      it 'has empty context_fields hash' do
+        expect(simple_tool.context_fields).to eq({})
+      end
+    end
+  end
+
   describe 'execution context DSL' do
     context 'with backend tool' do
       let(:backend_tool_class) do

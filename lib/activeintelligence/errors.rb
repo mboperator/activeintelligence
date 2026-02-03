@@ -31,4 +31,14 @@ module ActiveIntelligence
   class ExternalServiceError < ToolError; end
   class RateLimitError < ToolError; end
   class AuthenticationError < ToolError; end
+
+  # Context-related errors
+  class ContextError < Error
+    attr_reader :missing_fields
+
+    def initialize(message = "Context validation failed", missing_fields: [])
+      @missing_fields = missing_fields
+      super(message)
+    end
+  end
 end

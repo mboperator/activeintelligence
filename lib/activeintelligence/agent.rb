@@ -46,12 +46,13 @@ module ActiveIntelligence
     end
 
     # Instance attributes
-    attr_reader :objective, :messages, :options, :tools, :conversation, :state, :session, :current_turn
+    attr_reader :objective, :messages, :options, :tools, :conversation, :state, :session, :current_turn, :context
 
-    def initialize(objective: nil, options: {}, tools: nil, conversation: nil)
+    def initialize(objective: nil, options: {}, tools: nil, conversation: nil, context: {})
       @objective = objective
       @options = options
-      @tools = tools || self.class.tools.map(&:new)
+      @context = context
+      @tools = tools || self.class.tools.map { |t| t.new(context: @context) }
       @conversation = conversation
 
       # Initialize session for observability
@@ -644,7 +645,7 @@ module ActiveIntelligence
         return "Tool not found: #{tool_name}"
       end
 
-      tool_instance = tool.is_a?(Class) ? tool.new : tool
+      tool_instance = tool.is_a?(Class) ? tool.new(context: @context) : tool
       tool_class = tool.is_a?(Class) ? tool : tool.class
 
       # Create tool execution tracker
@@ -688,7 +689,7 @@ module ActiveIntelligence
 
       if tool
         # Execute tool and get result
-        tool_instance = tool.is_a?(Class) ? tool.new : tool
+        tool_instance = tool.is_a?(Class) ? tool.new(context: @context) : tool
         tool_instance.call(tool_params)
       else
         "Tool not found: #{tool_name}"
