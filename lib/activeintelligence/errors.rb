@@ -31,6 +31,7 @@ module ActiveIntelligence
   class ExternalServiceError < ToolError; end
   class RateLimitError < ToolError; end
   class AuthenticationError < ToolError; end
+  class AuthorizationError < ToolError; end
 
   # Context-related errors
   class ContextError < Error

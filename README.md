@@ -309,6 +309,72 @@ error_response("Something went wrong", details: { code: 500 })
 # Returns: { error: true, message: "Something went wrong", details: { code: 500 } }
 ```
 
+#### Tool Authentication & Authorization
+
+Use `before_execute` callbacks to authenticate or authorize users before tool execution. Callbacks run in order and can halt execution by raising errors.
+
+```ruby
+class AdminDashboardTool < ActiveIntelligence::Tool
+  name "admin_dashboard"
+  description "Access admin dashboard data"
+
+  # Declare required context from the agent
+  context_field :current_user, required: true
+
+  # Authentication/authorization callbacks (run in order)
+  before_execute :require_authentication
+  before_execute :require_admin_role
+
+  param :report_type, type: String, required: true,
+        enum: ["users", "revenue", "metrics"]
+
+  def execute(params)
+    data = fetch_report(params[:report_type])
+    success_response({ report: data })
+  end
+
+  private
+
+  def require_authentication(_params)
+    unless current_user&.authenticated?
+      raise AuthenticationError.new("Authentication required")
+    end
+  end
+
+  def require_admin_role(_params)
+    unless current_user&.admin?
+      raise AuthorizationError.new("Admin access required",
+        details: { required_role: "admin" })
+    end
+  end
+end
+```
+
+**Using block syntax:**
+
+```ruby
+class PremiumTool < ActiveIntelligence::Tool
+  context_field :current_user, required: true
+
+  before_execute do |params|
+    unless current_user&.subscribed?
+      raise AuthorizationError.new("Premium subscription required")
+    end
+  end
+
+  def execute(params)
+    # Only runs if user is subscribed
+  end
+end
+```
+
+**Key features:**
+- Callbacks run before `execute`, after parameter validation
+- Raise `AuthenticationError` or `AuthorizationError` to halt execution
+- Errors are automatically converted to proper error responses
+- Works in both Agent and MCP Controller contexts
+- Callbacks are inherited by subclasses
+
 ### Advanced Usage
 
 #### Streaming Responses
@@ -365,6 +431,8 @@ end
 - `name` - Set the tool name for LLM APIs
 - `description` - Describe the tool's purpose
 - `param` - Define a parameter with validation
+- `context_field` - Declare expected context from the agent
+- `before_execute` - Register callbacks to run before execution (for auth, validation, etc.)
 - `on_error` - Add error handlers
 - `rescue_from` - Handle exceptions
 

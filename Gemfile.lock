@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    activeintelligence.rb (0.0.1)
+    activeintelligence (0.0.1)
 
 GEM
   remote: https://rubygems.org/
@@ -75,7 +75,7 @@ PLATFORMS
   x86_64-linux
 
 DEPENDENCIES
-  activeintelligence.rb!
+  activeintelligence!
   pry (~> 0.14, >= 0)
   rake (~> 13.0)
   rspec (~> 3.0)
